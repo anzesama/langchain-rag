@@ -279,7 +279,7 @@ class VectorStoreManager:
                 page_content=chunk_data['text_content'],
                 metadata=chunk_data['metadata']
             )
-            results.append((doc, similarities))
+            results.append((doc, similarity))
 
         logger.info(f"搜索 '{query[:30]}...', 返回 {len(results)}/{top_k} 个结果")
         return results

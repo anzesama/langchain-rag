@@ -24,13 +24,13 @@ def test_path_config():
 
     # Test wiki_manager_web.py
     from scripts.wiki_manager_web import DB_PATH, CHROMA_DB_PATH
-    assert DB_PATH == BASE_DIR / 'data' / 'wiki' / 'wiki.db'
+    assert DB_PATH == BASE_DIR / 'storage' / 'knowledge_base.db'
     assert CHROMA_DB_PATH == BASE_DIR / 'storage' / 'knowledge_base'
     print("  ✓ wiki_manager_web.py paths correct")
 
     # Test wiki_review_web.py
     from scripts.wiki_review_web import DB_PATH as REVIEW_DB_PATH, CHROMA_DB_PATH as REVIEW_CHROMA_PATH
-    assert REVIEW_DB_PATH == BASE_DIR / 'data' / 'wiki' / 'wiki.db'
+    assert REVIEW_DB_PATH == BASE_DIR / 'storage' / 'knowledge_base.db'
     assert REVIEW_CHROMA_PATH == BASE_DIR / 'storage' / 'knowledge_base'
     print("  ✓ wiki_review_web.py paths correct")
 

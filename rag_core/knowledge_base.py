@@ -79,17 +79,17 @@ class KnowledgeBase:
             logger.info(f"从 LSH 索引恢复 global_counter: {self._global_order_counter}")
             return
         
-        # 3. 从 ChromaDB 恢复（查询所有文档的 global_order 最大值）
+        # 3. 从 libsql 向量库恢复（查询所有文档的 global_order 最大值）
         try:
-            all_docs = self.vector_store.vectorstore._collection.get(include=['metadatas'])
-            if all_docs['metadatas']:
-                global_orders = [meta.get('global_order', 0) for meta in all_docs['metadatas'] if meta]
+            docs = self.vector_store.list_documents()
+            if docs:
+                global_orders = [d.get('metadata', {}).get('global_order', 0) for d in docs if d.get('metadata')]
                 if global_orders:
                     self._global_order_counter = max(global_orders)
-                    logger.info(f"从 ChromaDB 恢复 global_counter: {self._global_order_counter}")
+                    logger.info(f"从 libsql 向量库恢复 global_counter: {self._global_order_counter}")
                     return
         except Exception as e:
-            logger.warning(f"从 ChromaDB 恢复 global_counter 失败: {e}")
+            logger.warning(f"从 libsql 向量库恢复 global_counter 失败: {e}")
         
         # 4. 都失败，使用默认值 0
         self._global_order_counter = 0

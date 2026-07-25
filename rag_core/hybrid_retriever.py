@@ -202,35 +202,28 @@ class HybridRetriever:
             import random
             sample_size = min(3000, 5000)
             
-            # 获取所有文档的元数据和 ID
-            all_data = self.vector_store.vectorstore._collection.get(
-                include=['metadatas']
-            )
+            # 使用 libsql 向量库的 list_documents 获取所有文档
+            docs = self.vector_store.list_documents()
             
-            if not all_data.get('metadatas'):
+            if not docs:
                 return []
             
-            metadatas = all_data['metadatas']
-            all_ids = all_data.get('ids', [])
-            
             # 随机采样
-            if len(metadatas) > sample_size:
-                indices = random.sample(range(len(metadatas)), sample_size)
-                sampled_metadatas = [metadatas[i] for i in indices]
-                sampled_ids = [all_ids[i] if i < len(all_ids) else f'doc_{i}' for i in indices]
+            if len(docs) > sample_size:
+                indices = random.sample(range(len(docs)), sample_size)
+                sampled_docs = [docs[i] for i in indices]
             else:
-                sampled_metadatas = metadatas
-                sampled_ids = all_ids
+                sampled_docs = docs
             
             # 构建文档列表（用元数据中的信息构建简短文本）
             documents = []
-            for i, meta in enumerate(sampled_metadatas):
-                if meta:
+            for i, doc in enumerate(sampled_docs):
+                if doc and doc.get('metadata'):
+                    meta = doc['metadata']
                     source = meta.get('source', '')
-                    chunk_id = meta.get('chunk_id', '')
-                    doc_type = meta.get('doc_type', '')
+                    chunk_id = doc.get('id', '')
                     # 用元数据构建简短文本用于关键词匹配
-                    short_text = f"{source} {chunk_id} {doc_type}"
+                    short_text = f"{source} {chunk_id}"
                     if len(short_text.strip()) > 5:
                         documents.append({
                             'id': meta.get('chunk_id', f'doc_{i}'),

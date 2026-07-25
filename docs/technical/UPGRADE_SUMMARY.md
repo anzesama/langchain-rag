@@ -1,13 +1,23 @@
 # LangChain RAG 知识库系统 — 架构升级总结
 
-**升级时间**: 2026-07-03  
-**升级目标**: 实现高性能语义检索引擎（LSH 优先 + ChromaDB 回退 + 因果排序 + 断点续传）
+**升级时间**: 2026-07-03（第一阶段 LSH）→ 2026-07-26（第二阶段 libsql）
+**升级目标**: 实现高性能语义检索引擎（LSH 优先 + ChromaDB 回退 + 因果排序 + 断点续传 + libsql 统一存储）
 
 ---
 
 ## 📊 升级概览
 
-本次升级将知识库从单一的 ChromaDB HNSW 检索架构，升级为 **LSH 优先 + ChromaDB 回退** 的双层检索架构，显著提升检索性能并支持小说等长文档的因果排序。
+### 第一阶段：LSH 优先检索（2026-07-03）
+
+将知识库从单一的 ChromaDB HNSW 检索架构，升级为 **LSH 优先 + ChromaDB 回退** 的双层检索架构。
+
+### 第二阶段：libsql 统一存储（2026-07-26）
+
+使用 libsql 替代 ChromaDB 和 SQLite，统一存储层：
+- **向量数据** → libsql chunks 表
+- **Wiki 结构化数据** → libsql entities/relationships/facts 表
+- **FAISS LSH** → 继续独立存储（用于高速检索）
+- **ChromaDB** → 保留为回退存储
 
 ### 核心变更
 

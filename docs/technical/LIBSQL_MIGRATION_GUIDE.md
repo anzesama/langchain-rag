@@ -1,7 +1,7 @@
 # libsql 迁移指南
 
-- 日期：2026-07-25
-- 状态：📋 待实施
+- 日期：2026-07-26
+- 状态：✅ 已完成（Phase 6: 文档更新）
 - 目标：使用 libsql 替代 ChromaDB 和 SQLite，统一存储层
 
 ---
@@ -21,52 +21,74 @@
 
 ### 背景
 
-当前 RAG 系统使用混合存储方案：
+RAG 系统原使用混合存储方案：
 - **ChromaDB**：向量存储（存储文档块 + 向量 + 元数据）
 - **SQLite**：Wiki 数据库（存储实体、关系、历史版本、事实）
 - **FAISS LSH 索引**：加速检索（独立存储）
 
-### 问题
+### 迁移结果
 
-- 存储层不统一，数据冗余
-- ChromaDB 和 SQLite 功能重叠
-- 维护成本高
+✅ 已完成 libsql 统一存储迁移：
+- **libsql** (`storage/knowledge_base.db`)：统一存储向量数据和 Wiki 结构化数据
+- **FAISS LSH**：继续独立存储，用于高速检索（~0.1ms）
+- **ChromaDB**：保留为回退存储（LSH 召回不足时使用）
 
-### 解决方案
+### libsql 数据库结构
 
-使用 libsql（本地文件存储）统一存储：
-- 向量数据：chunks 表（chunk_id, vector, metadata）
-- 结构化数据：entities/relationships/facts 表
-- FAISS LSH 索引：继续独立存储（用于加速检索）
+**chunks 表**（向量存储）
+```sql
+CREATE TABLE chunks (
+    chunk_id TEXT PRIMARY KEY,
+    vector BLOB NOT NULL,
+    metadata TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**entities / relationships / entity_history / facts / pending_reviews / correction_log** — 同迁移计划定义
+
+### 迁移策略
+
+采用渐进式迁移：
+1. 创建 libsql 版本的 `VectorStoreManager` 和 `WikiDB`
+2. 保持原有 ChromaDB/SQLite 代码不变（作为回退）
+3. `knowledge_base.py` 切换到 libsql 向量存储
+4. `wiki_db.py` 重导出 libsql 版本（零代码变更）
+5. 提供迁移脚本一键完成数据迁移
 
 ---
 
-## 前置条件
+## 当前状态
+
+迁移已完成。以下是已实现的组件：
+
+| 组件 | 文件 | 状态 |
+|------|------|------|
+| libsql 向量存储 | `rag_core/vector_store_libsql.py` | ✅ 已实现 |
+| libsql Wiki 数据库 | `rag_core/wiki_db_libsql.py` | ✅ 已实现 |
+| Wiki DB 兼容层 | `rag_core/wiki_db.py` | ✅ 已实现 |
+| 知识库主类更新 | `rag_core/knowledge_base.py` | ✅ 已切换 |
+| 备份脚本 | `scripts/backup_before_migration.py` | ✅ 已实现 |
+| 迁移脚本 | `scripts/migrate_to_libsql.py` | ✅ 已实现 |
+| 回滚脚本 | `scripts/rollback_libsql.py` | ✅ 已实现 |
+| 验证脚本 | `scripts/verify_migration.py` | ✅ 已实现 |
+
+## 迁移前准备（如需重新迁移）
 
 ### 1. 备份现有数据
 
-**重要**：在开始迁移前，必须先备份现有数据！
-
 ```bash
-# 运行备份脚本
 python scripts/backup_before_migration.py
 ```
 
-备份内容包括：
-- ChromaDB 数据
-- SQLite 数据
-- LSH 索引
-- 全局计数器
-
 ### 2. 检查磁盘空间
 
-确保有足够的磁盘空间：
-- libsql 数据库文件：约 5-10 GB（取决于文档数量）
+- libsql 数据库：约 5-10 GB
 - 备份文件：约 10 GB（临时）
 
 ### 3. 确认 Python 环境
 
-确保使用 `ml_env` 环境：
 ```bash
 conda activate ml_env
 python --version  # 应该是 3.9.x

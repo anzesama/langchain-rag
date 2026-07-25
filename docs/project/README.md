@@ -1,3 +1,11 @@
+# ⚠️ 注意
+
+此 README.md 属于 **电信客户流失预测系统**（独立项目），不是 RAG 知识库系统。
+
+RAG 知识库系统的 README 在项目根目录：`D:/class/project-config/langchain-rag/README.md`
+
+---
+
 # 电信客户流失预测系统
 
 ## 快速启动

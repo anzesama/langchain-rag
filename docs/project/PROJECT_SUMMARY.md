@@ -58,19 +58,27 @@
 - ChromaDB HNSW 回退
 - 条件因果排序（novel 占比 > 80%）
 
-### 6. CLI 命令更新
+### 6. libsql 统一存储（Phase 6）
+- `vector_store_libsql.py` — libsql 向量存储管理器
+- `wiki_db_libsql.py` — libsql Wiki 数据库
+- `wiki_db.py` — 重导出 libsql 版本（零代码变更兼容）
+- `knowledge_base.py` — 切换使用 libsql 向量存储
+- 迁移脚本：`migrate_to_libsql.py`、`backup_before_migration.py`、`rollback_libsql.py`、`verify_migration.py`
+- 文档：`LIBSQL_MIGRATION_GUIDE.md`、`LIBSQL_ROLLBACK_PLAN.md`
+
+### 7. CLI 命令更新
 - `novel list` — 列出已加载章节
 - `novel add` — 添加单个章节
 - `novel add-all` — 批量加载
 - `novel status` — 查看进度
 - `rebuild --novel-only` — 仅重建小说数据
 
-### 7. 小说章节分割
+### 8. 小说章节分割
 - `split_novel_final.py` — 正确分割《蛊真人》
 - 生成 2,184 个章节文件
 - UTF-8 编码输出
 
-### 8. 文档更新
+### 9. 文档更新
 - `README.md` — 新增 LSH、因果排序、断点续传说明
 - `PROJECT_INDEX.md` — 更新目录结构和功能列表
 - `ARCHITECTURE_STATUS.md` — 更新架构状态
@@ -104,13 +112,16 @@ langchain-rag/
 ├── rag_core/              # 核心模块
 │   ├── knowledge_base.py  # 知识库主类（重写）
 │   ├── rag_pipeline.py    # RAG 管道（重写）
-│   ├── lsh_index.py       # LSH 索引管理器 (NEW!)
-│   ├── causal_sorter.py   # 因果排序器 (NEW!)
-│   ├── resume_loader.py   # 断点续传加载器 (NEW!)
+│   ├── vector_store_libsql.py  # libsql 向量存储 (NEW!)
+│   ├── vector_store.py    # ChromaDB 存储（回退）
+│   ├── wiki_db_libsql.py  # libsql Wiki 数据库 (NEW!)
+│   ├── wiki_db.py         # Wiki DB 兼容层 (NEW!)
+│   ├── lsh_index.py       # LSH 索引管理器
+│   ├── causal_sorter.py   # 因果排序器
+│   ├── resume_loader.py   # 断点续传加载器
 │   ├── auto_importer.py   # 自动导入
 │   ├── document_loader.py # 文档加载
 │   ├── embedding_service.py
-│   ├── vector_store.py    # ChromaDB 存储
 │   ├── hybrid_router.py   # 混合检索路由
 │   ├── parent_index_builder.py
 │   └── parent_document_retriever.py
@@ -118,10 +129,12 @@ langchain-rag/
 │   ├── novel_chapters/    # 小说章节文件 (NEW!)
 │   └── 《蛊真人》精校版_utf8.txt
 ├── storage/
-│   ├── novel_lsh.index    # FAISS LSH 索引 (NEW!)
-│   ├── id_map.pkl         # ID 映射 (NEW!)
-│   ├── progress_*.json    # per-file 进度 (NEW!)
-│   └── knowledge_base/    # ChromaDB 存储
+│   ├── knowledge_base.db  # libsql 统一数据库 (NEW!)
+│   ├── lsh_index/         # FAISS LSH 索引
+│   │   ├── index.faiss
+│   │   └── id_map.pkl
+│   ├── progress_*.json    # per-file 进度
+│   └── knowledge_base/    # ChromaDB 存储（回退）
 ├── split_novel_final.py   # 小说章节分割脚本 (NEW!)
 ├── rag_cli.py             # CLI 工具（更新）
 ├── rag_config.py          # 配置（更新）
@@ -188,11 +201,15 @@ langchain-rag/
 - [x] 模块导出更新
 - [x] 小说章节分割脚本
 - [x] 测试验证通过
+- [x] libsql 向量存储实现
+- [x] libsql Wiki 数据库实现
+- [x] 迁移脚本（备份/迁移/回滚/验证）
+- [x] 文档更新（迁移指南 + 回退预案）
 - [ ] 《蛊真人》全量加载（进行中）
 - [ ] 性能基准测试
 
 ---
 
 **复盘人**: Agnes-2.0-Flash  
-**复盘时间**: 2026-07-03  
-**下次复盘**: 2026-07-10（《蛊真人》全量加载完成后）
+**复盘时间**: 2026-07-26  
+**下次复盘**: 2026-08-02

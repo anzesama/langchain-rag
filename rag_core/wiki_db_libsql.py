@@ -341,6 +341,44 @@ class WikiDB:
             logger.error(f"获取所有实体失败: {e}")
             return []
 
+    def get_entities_by_type(self, entity_type: str) -> List[Dict]:
+        """
+        按类型查询所有实体
+
+        Args:
+            entity_type: 实体类型
+
+        Returns:
+            实体列表
+        """
+        try:
+            conn = self.connect()
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT id, name, type, properties, aliases, source_chapter
+                FROM entities WHERE type = ?
+                ORDER BY name
+            ''', (entity_type,))
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            return [
+                {
+                    "id": row['id'],
+                    "name": row['name'],
+                    "type": row['type'],
+                    "properties": json.loads(row['properties']) if row['properties'] else {},
+                    "aliases": json.loads(row['aliases']) if row['aliases'] else [],
+                    "source_chapter": row['source_chapter']
+                }
+                for row in rows
+            ]
+        except Exception as e:
+            logger.error(f"按类型查询失败 {entity_type}: {e}")
+            return []
+
     def get_entity_history(self, entity_name: str, limit: int = 10) -> List[Dict]:
         """获取实体历史版本"""
         try:
@@ -719,3 +757,101 @@ class WikiDB:
     def _generate_entity_id(self, name: str) -> str:
         """生成实体 ID"""
         return "entity_" + hashlib.md5(name.encode()).hexdigest()[:8]
+
+    def get_fact_query_answer(self, query: str) -> Optional[str]:
+        """
+        处理事实类查询
+
+        示例：
+            - "方源主修什么流派？"
+            - "方源持有哪些机器人？"
+            - "元始仙尊的弟子有哪些？"
+
+        Args:
+            query: 查询文本
+
+        Returns:
+            答案文本，无法回答返回 None
+        """
+        try:
+            # 解析查询
+            parts = self._parse_fact_query(query)
+            if not parts:
+                return None
+
+            entity_name, rel_type = parts
+
+            # 获取实体
+            entity = self.get_entity(entity_name)
+            if not entity:
+                return f"知识库中未找到实体: {entity_name}"
+
+            # 根据关系类型查询
+            if rel_type in ["持有", "属于"]:
+                # 查询关系
+                relations = self.get_relations(entity['id'], rel_type=rel_type)
+                if not relations:
+                    return f"{entity_name} 没有相关的 {rel_type} 关系"
+
+                # 格式化答案
+                targets = [r['target_name'] for r in relations]
+                return f"{entity_name} {rel_type} 的对象: {', '.join(targets)}"
+
+            elif rel_type in ["主修", "师承", "盟友", "敌对"]:
+                # 查询关系
+                relations = self.get_relations(entity['id'], rel_type=rel_type)
+                if not relations:
+                    return f"{entity_name} 没有相关的 {rel_type} 关系"
+
+                # 格式化答案
+                targets = [r['target_name'] for r in relations]
+                return f"{entity_name} 的 {rel_type} 对象: {', '.join(targets)}"
+
+            else:
+                # 其他关系类型
+                relations = self.get_relations(entity['id'], rel_type=rel_type)
+                if not relations:
+                    return f"{entity_name} 没有相关的 {rel_type} 关系"
+
+                # 格式化答案
+                return f"{entity_name} 的 {rel_type} 关系:\n" + "\n".join([
+                    f"- {r['target_name']}"
+                    for r in relations
+                ])
+
+        except Exception as e:
+            logger.error(f"事实查询失败: {e}")
+            return None
+
+    def _parse_fact_query(self, query: str) -> Optional[tuple]:
+        """
+        解析事实类查询
+
+        返回：(实体名, 关系类型)
+
+        示例：
+            "方源主修什么流派？" → ("方源", "主修")
+            "方源持有哪些机器人？" → ("方源", "持有")
+        """
+        query = query.strip()
+
+        # 关系关键词映射
+        rel_keywords = {
+            "主修": "主修",
+            "属于": "属于",
+            "持有": "持有",
+            "师承": "师承",
+            "盟友": "盟友",
+            "敌对": "敌对",
+            "背叛": "背叛",
+        }
+
+        # 查找关系关键词
+        for rel_kw, rel_type in rel_keywords.items():
+            if rel_kw in query:
+                # 提取实体名（简化版）
+                parts = query.split(rel_kw, 1)
+                entity_name = parts[0].strip()
+                return entity_name, rel_type
+
+        return None

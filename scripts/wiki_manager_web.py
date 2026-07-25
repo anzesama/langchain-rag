@@ -61,7 +61,7 @@ def get_knowledge_base():
 
 app = Flask(__name__)
 
-DB_PATH = BASE_DIR / 'data' / 'wiki' / 'wiki.db'
+DB_PATH = BASE_DIR / 'storage' / 'knowledge_base.db'
 CHROMA_DB_PATH = BASE_DIR / 'storage' / 'knowledge_base'
 
 

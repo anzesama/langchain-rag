@@ -595,17 +595,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Sync Panel -->
-        <div id="panel-sync" class="panel" style="display: none;">
-            <div class="panel-header">
-                <div class="panel-title">数据同步</div>
-            </div>
-            <p style="color: #666; margin-bottom: 20px;">将 Wiki 数据同步到 ChromaDB 向量数据库</p>
-            <button class="btn btn-warning" onclick="syncToChromaDB()">开始同步</button>
-            <div id="sync-status" style="margin-top: 20px; padding: 15px; background: #f0f0f0; border-radius: 5px; display: none;">
-                <div id="sync-progress">准备中...</div>
-            </div>
-        </div>
+        <!-- Sync Panel (已在 libsql 统一存储中移除) -->
 
         <!-- Search Panel -->
         <div id="panel-search" class="panel" style="display: none;">
@@ -1182,29 +1172,7 @@ if (data.relations.length === 0) {
         }
 
         // 数据同步
-        async function syncToChromaDB() {
-            const statusDiv = document.getElementById('sync-status');
-            const progressDiv = document.getElementById('sync-progress');
-            statusDiv.style.display = 'block';
-            progressDiv.innerHTML = '<span class="loading"></span> 开始同步...';
-
-            try {
-                const res = await fetch('/api/sync', { method: 'POST' });
-                const data = await res.json();
-                if (data.success) {
-                    progressDiv.innerHTML = `
-                        <div style="color: #52c41a; font-weight: bold;">同步完成！</div>
-                        <div style="color: #666; margin-top: 5px;">已同步实体: ${data.entities_synced}</div>
-                        <div style="color: #666;">已同步关系: ${data.relations_synced}</div>
-                    `;
-                } else {
-                    progressDiv.innerHTML = `<div style="color: #ff4d4f;">同步失败: ${data.error}</div>`;
-                }
-            } catch (e) {
-                console.error("Fetch Error:", e);
-                progressDiv.innerHTML = `<div style="color: #ff4d4f;">同步失败: ${e.message}</div>`;
-            }
-        }
+        // syncToChromaDB 已在 libsql 统一存储中移除（无需同步）
 
         // ==================== 知识库语义搜索 ====================
         let searchCache = null;
@@ -2010,71 +1978,6 @@ def import_entities():
     except Exception as e:
         return jsonify({"success": False, "error": "操作失败，请查看日志"}), 500
 
-
-@app.route('/api/sync', methods=['POST'])
-def sync_to_chroma():
-    """同步 Wiki 数据到 libsql 向量库"""
-    try:
-        db_path = DB_PATH
-
-        wiki_db = WikiDB(str(db_path))
-        wiki_db.init_db()
-
-        kb = get_knowledge_base()
-
-        entities = wiki_db.get_all_entities()
-
-        entities_synced = 0
-        for entity in entities:
-            try:
-                content = f"{entity['name']} ({entity['type']})\n"
-                props = entity.get('properties')
-                if props:
-                    import json as _json
-                    content += f"属性: {_json.dumps(props, ensure_ascii=False)}"
-
-                kb.add_document(
-                    filepath=Path(db_path).parent / f"wiki_entity_{entity['id']}.txt",
-                    content=content,
-                    metadata={
-                        'type': 'wiki_entity',
-                        'entity_name': entity['name'],
-                        'entity_type': entity['type']
-                    }
-                )
-                entities_synced += 1
-            except Exception as e:
-                logger.warning(f"同步实体失败 {entity.get('name', '?')}: {e}")
-
-        entities_full = wiki_db.get_all_entities()
-        relations_synced = 0
-        for entity in entities_full:
-            try:
-                rels = wiki_db.get_relations(entity['id']) or []
-                for rel_type, rel_list in rels.items():
-                    for rel in rel_list:
-                        content = f"{entity['name']} -{rel_type}-> {rel.get('target_name', '?')}"
-                        kb.add_document(
-                            filepath=Path(db_path).parent / f"wiki_relation_{rel.get('id', 0)}.txt",
-                            content=content,
-                            metadata={
-                                'type': 'wiki_relation',
-                                'source': entity['name'],
-                                'target': rel.get('target_name', ''),
-                                'relation_type': rel_type
-                            }
-                        )
-                        relations_synced += 1
-            except Exception as e:
-                logger.warning(f"同步关系失败: {e}")
-
-        return jsonify({
-            "success": True,
-            "entities_synced": entities_synced,
-            "relations_synced": relations_synced
-        })
-    except Exception as e:
-        print(f"同步失败: {e}")
 
 @app.route('/api/llm/review-relations', methods=['GET', 'POST'])
 def llm_review_relations():

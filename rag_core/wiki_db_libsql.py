@@ -279,19 +279,14 @@ class WikiDB:
             return False
 
     def approve_entity(self, entity_id: str) -> bool:
-        """批准实体"""
+        """批准实体（当前版本不执行状态更新，表结构已简化为无 status 列）"""
         try:
-            conn = self.connect()
-            cursor = conn.cursor()
-
-            cursor.execute('''
-                UPDATE entities SET status = 'approved' WHERE id = ?
-            ''', (entity_id,))
-
-            conn.commit()
-            conn.close()
-            logger.info(f"实体批准: {entity_id}")
-            return True
+            # 新版实体表没有 status 列，所以只检查实体是否存在
+            entity_name = self.get_entity_name(entity_id)
+            if entity_name:
+                logger.info(f"实体批准（确认存在）: {entity_id}")
+                return True
+            return False
         except Exception as e:
             logger.error(f"实体批准失败: {e}")
             return False
@@ -416,19 +411,19 @@ class WikiDB:
             return False
 
     def approve_relation(self, relation_id: str) -> bool:
-        """批准关系"""
+        """批准关系（当前版本不执行状态更新，表结构已简化为无 status 列）"""
         try:
             conn = self.connect()
             cursor = conn.cursor()
 
-            cursor.execute('''
-                UPDATE relationships SET status = 'approved' WHERE id = ?
-            ''', (relation_id,))
-
-            conn.commit()
+            # 新版关系表没有 status 列，检查关系是否存在
+            cursor.execute('SELECT id FROM relationships WHERE id = ?', (relation_id,))
+            if cursor.fetchone():
+                logger.info(f"关系批准（确认存在）: {relation_id}")
+                conn.close()
+                return True
             conn.close()
-            logger.info(f"关系批准: {relation_id}")
-            return True
+            return False
         except Exception as e:
             logger.error(f"关系批准失败: {e}")
             return False

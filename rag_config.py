@@ -56,7 +56,7 @@ LLM_TEMPERATURE = float(os.getenv("RAG_LLM_TEMPERATURE", "0.1"))
 LLM_MAX_TOKENS = int(os.getenv("RAG_LLM_MAX_TOKENS", "2048"))
 
 AGNES_API_KEY = os.getenv("RAG_AGNES_API_KEY", "sk-MEQQLoMut6kdisHzDdRWnjPr0bmz3bLcGBD5A7zJHUKASnvS")
-AGNES_API_BASE = os.getenv("RAG_AGNES_API_BASE", "https://apihub.agnes-ai.com")
+AGNES_API_BASE = os.getenv("RAG_AGNES_API_BASE", "https://apihub.agnes-ai.com/v1")
 
 # ==================== 自动资源平衡 ====================
 import psutil

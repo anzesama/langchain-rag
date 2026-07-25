@@ -369,6 +369,10 @@ HTML_TEMPLATE = """
             padding: 20px;
             position: relative;
         }
+        #graph-chart {
+            width: 100%;
+            height: 600px;
+        }
         .graph-controls {
             position: absolute;
             top: 20px;
@@ -742,6 +746,7 @@ HTML_TEMPLATE = """
 
         // ========== 面板切换 ==========
         function showPanel(panelName, evt) {
+            console.log('[showPanel]', panelName);
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
             let activeTab = evt ? evt.currentTarget : document.querySelector(`.nav-tab[data-panel="${panelName}"]`);
             if (activeTab) activeTab.classList.add('active');
@@ -1302,6 +1307,8 @@ if (data.relations.length === 0) {
                 name: r.rel_type,
                 lineStyle: { width: 2, curveness: 0.3 }
             }));
+
+            console.log(`[graph] nodes=${nodes.length}, links=${links.length}`);
 
             const option = {
                 title: {

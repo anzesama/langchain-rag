@@ -1763,8 +1763,11 @@ def get_relations():
     conn = get_db_connection()
     try:
         cursor = conn.execute('''
-            SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter
+            SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
+                   src.name as source_name, tgt.name as target_name
             FROM relationships r
+            LEFT JOIN entities src ON r.source_id = src.id
+            LEFT JOIN entities tgt ON r.target_id = tgt.id
             ORDER BY r.id DESC
             LIMIT 100
         ''')

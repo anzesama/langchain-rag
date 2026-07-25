@@ -602,8 +602,7 @@ def add_entity():
             return jsonify({"success": False, "error": "实体名称不能为空"}), 400
 
         # 确保数据库存在
-        db_path = Path('D:/class/project-config/data/wiki/wiki.db')
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path = DB_PATH
 
         # 初始化数据库
         wiki_db = WikiDB(str(db_path))
@@ -619,49 +618,32 @@ def add_entity():
 
 @app.route('/api/sync', methods=['POST'])
 def sync_to_chroma():
-    """同步 Wiki 数据到 ChromaDB"""
+    """同步 Wiki 数据到 libsql 向量库"""
     try:
-        db_path = Path('D:/class/project-config/data/wiki/wiki.db')
-        chroma_path = Path('D:/class/project-config/storage/knowledge_base')
+        db_path = DB_PATH
 
         # 初始化 Wiki DB
         wiki_db = WikiDB(str(db_path))
         wiki_db.init_db()
 
-        # 初始化 ChromaDB
+        # 使用 KnowledgeBase
         kb = KnowledgeBase()
-        kb.vectorstore = kb._EmbeddingWrapper(kb.embeddings)
 
         # 获取所有实体
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute('SELECT id, name, type, properties FROM entities')
-        entities = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        entities = wiki_db.get_all_entities()
 
-        # 获取所有关系
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute('''
-            SELECT r.id, e1.name as source_name, e2.name as target_name, r.rel_type
-            FROM relationships r
-            JOIN entities e1 ON r.source_id = e1.id
-            JOIN entities e2 ON r.target_id = e2.id
-        ''')
-        relations = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-
-        # 同步实体到 ChromaDB
+        # 同步实体到向量库
         entities_synced = 0
         for entity in entities:
             try:
                 content = f"{entity['name']} ({entity['type']})\n"
-                if entity['properties']:
-                    content += f"属性: {json.dumps(entity['properties'], ensure_ascii=False)}"
+                props = entity.get('properties')
+                if props:
+                    import json as _json
+                    content += f"属性: {_json.dumps(props, ensure_ascii=False)}"
 
-                # 添加到 ChromaDB
                 kb.add_document(
-                    filepath=db_path.parent / f"wiki_entity_{entity['id']}.txt",
+                    filepath=Path(str(db_path)).parent / f"wiki_entity_{entity['id']}.txt",
                     content=content,
                     metadata={
                         'type': 'wiki_entity',
@@ -671,28 +653,37 @@ def sync_to_chroma():
                 )
                 entities_synced += 1
             except Exception as e:
-                print(f"同步实体失败 {entity['name']}: {e}")
+                print(f"同步实体失败 {entity.get('name', '?')}: {e}")
 
-        # 同步关系到 ChromaDB
+        # 同步关系到向量库
         relations_synced = 0
-        for rel in relations:
+        for entity in entities:
             try:
-                content = f"{rel['source_name']} -{rel['rel_type']}-> {rel['target_name']}"
-                
-                # 添加到 ChromaDB
-                kb.add_document(
-                    filepath=db_path.parent / f"wiki_relation_{rel['id']}.txt",
-                    content=content,
-                    metadata={
-                        'type': 'wiki_relation',
-                        'source': rel['source_name'],
-                        'target': rel['target_name'],
-                        'relation_type': rel['rel_type']
-                    }
-                )
-                relations_synced += 1
+                rels = wiki_db.get_relations(entity['id']) or {}
+                for rel_type, rel_list in rels.items():
+                    for rel in rel_list:
+                        content = f"{entity['name']} -{rel_type}-> {rel.get('target_name', '?')}"
+                        kb.add_document(
+                            filepath=Path(str(db_path)).parent / f"wiki_relation_{rel.get('id', 0)}.txt",
+                            content=content,
+                            metadata={
+                                'type': 'wiki_relation',
+                                'source': entity['name'],
+                                'target': rel.get('target_name', ''),
+                                'relation_type': rel_type
+                            }
+                        )
+                        relations_synced += 1
             except Exception as e:
-                print(f"同步关系失败 {rel['source_name']} -{rel['rel_type']}-> {rel['target_name']}: {e}")
+                print(f"同步关系失败: {e}")
+
+        return jsonify({
+            "success": True,
+            "entities_synced": entities_synced,
+            "relations_synced": relations_synced
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
         return jsonify({
             "success": True,

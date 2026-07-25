@@ -2013,43 +2013,28 @@ def import_entities():
 
 @app.route('/api/sync', methods=['POST'])
 def sync_to_chroma():
-    """同步 Wiki 数据到 ChromaDB"""
+    """同步 Wiki 数据到 libsql 向量库"""
     try:
         db_path = DB_PATH
-        chroma_path = CHROMA_DB_PATH
 
         wiki_db = WikiDB(str(db_path))
         wiki_db.init_db()
 
         kb = get_knowledge_base()
-        kb.vectorstore = kb._EmbeddingWrapper(kb.embeddings)
 
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute('SELECT id, name, type, properties, status FROM entities')
-        entities = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute('''
-            SELECT r.id, e1.name as source_name, e2.name as target_name, r.rel_type, r.status
-            FROM relationships r
-            JOIN entities e1 ON r.source_id=e1.id
-            JOIN entities e2 ON r.target_id=e2.id
-        ''')
-        relations = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        entities = wiki_db.get_all_entities()
 
         entities_synced = 0
         for entity in entities:
             try:
                 content = f"{entity['name']} ({entity['type']})\n"
-                if entity['properties']:
-                    content += f"属性: {json.dumps(entity['properties'], ensure_ascii=False)}"
+                props = entity.get('properties')
+                if props:
+                    import json as _json
+                    content += f"属性: {_json.dumps(props, ensure_ascii=False)}"
 
                 kb.add_document(
-                    filepath=db_path.parent / f"wiki_entity_{entity['id']}.txt",
+                    filepath=Path(db_path).parent / f"wiki_entity_{entity['id']}.txt",
                     content=content,
                     metadata={
                         'type': 'wiki_entity',
@@ -2059,26 +2044,29 @@ def sync_to_chroma():
                 )
                 entities_synced += 1
             except Exception as e:
-                print(f"同步实体失败 {entity['name']}: {e}")
+                logger.warning(f"同步实体失败 {entity.get('name', '?')}: {e}")
 
+        entities_full = wiki_db.get_all_entities()
         relations_synced = 0
-        for rel in relations:
+        for entity in entities_full:
             try:
-                content = f"{rel['source_name']} -{rel['rel_type']}-> {rel['target_name']}"
-
-                kb.add_document(
-                    filepath=db_path.parent / f"wiki_relation_{rel['id']}.txt",
-                    content=content,
-                    metadata={
-                        'type': 'wiki_relation',
-                        'source': rel['source_name'],
-                        'target': rel['target_name'],
-                        'relation_type': rel['rel_type']
-                    }
-                )
-                relations_synced += 1
+                rels = wiki_db.get_relations(entity['id']) or []
+                for rel_type, rel_list in rels.items():
+                    for rel in rel_list:
+                        content = f"{entity['name']} -{rel_type}-> {rel.get('target_name', '?')}"
+                        kb.add_document(
+                            filepath=Path(db_path).parent / f"wiki_relation_{rel.get('id', 0)}.txt",
+                            content=content,
+                            metadata={
+                                'type': 'wiki_relation',
+                                'source': entity['name'],
+                                'target': rel.get('target_name', ''),
+                                'relation_type': rel_type
+                            }
+                        )
+                        relations_synced += 1
             except Exception as e:
-                print(f"同步关系失败 {rel['source_name']} -{rel['rel_type']}-> {rel['target_name']}: {e}")
+                logger.warning(f"同步关系失败: {e}")
 
         return jsonify({
             "success": True,

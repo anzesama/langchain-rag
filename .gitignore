@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+ml_env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Data
+data/
+storage/knowledge_base/
+storage/chroma_db/
+storage/lsh_index/*.faiss
+storage/lsh_index/*.pkl
+storage/global_counter.json
+
+# Logs
+*.log
+logs/
+
+# Backup files
+*.backup.*
+*_backup.*
+
+# Temporary files
+*.tmp
+*.temp
+nul
+tmp_*.txt
+tmp_*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node modules (already excluded by node_modules/.gitkeep)
+node_modules/
+
+# Archives
+archive/
+
+# Paddle
+*.pdparams
+*.pdopt
+*.pdiparams
+*.pdmodel
+*.pdiparams.info
+*.pdzip

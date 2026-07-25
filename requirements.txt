@@ -1,0 +1,35 @@
+# RAG 知识库 — 核心依赖
+# 使用 ml_env (Python 3.9) 虚拟环境
+
+# === LangChain 生态 ===
+langchain>=0.2.0,<0.3.0
+langchain-community>=0.2.0,<0.3.0
+langchain-text-splitters>=0.2.0,<0.3.0
+langchain-chroma>=0.1.0,<0.2.0
+langchain-openai>=0.1.0,<0.2.0
+
+# === 向量数据库 ===
+chromadb>=0.4.0,<1.0.0
+
+# === Embedding 模型 ===
+sentence-transformers>=3.0.0,<4.0.0
+
+# === 文档加载器 ===
+pypdf>=4.0.0,<5.0.0
+docx2txt>=0.8,<1.0
+pandas>=2.0.0,<3.0.0
+openpyxl>=3.1.0,<4.0.0
+lxml>=5.0.0,<6.0.0
+beautifulsoup4>=4.12.0,<5.0.0
+xlrd>=2.0.0,<3.0.0
+
+# === HTTP 服务 ===
+fastapi>=0.109.0,<1.0.0
+uvicorn[standard]>=0.27.0,<1.0.0
+pydantic>=2.0.0,<3.0.0
+python-multipart>=0.0.6,<1.0.0
+waitress>=3.0.0        # 同步 WSGI 服务器（推荐，不依赖 asyncio）
+asgiref>=3.0.0         # ASGI-to-WSGI 适配器
+
+# === OpenAI 兼容客户端 ===
+openai>=1.0.0,<2.0.0

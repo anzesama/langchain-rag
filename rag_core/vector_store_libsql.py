@@ -13,6 +13,7 @@ from langchain_core.documents import Document
 
 from rag_config import (
     VECTOR_STORE_NAME, VECTOR_STORE_PERSIST_DIR,
+    LIBSQL_DICTIONARY_PATH,
     LOCAL_EMBEDDING_DIM, ADD_BATCH_SIZE, logger
 )
 
@@ -33,8 +34,8 @@ class VectorStoreManager:
         self.persist_dir = persist_dir or VECTOR_STORE_PERSIST_DIR
         self.persist_dir.mkdir(parents=True, exist_ok=True)
 
-        # libsql 数据库文件路径
-        self.db_path = self.persist_dir / "knowledge_base.db"
+        # libsql 数据库文件路径（统一使用 LIBSQL_DICTIONARY_PATH）
+        self.db_path = LIBSQL_DICTIONARY_PATH
 
         # 查询向量缓存（query_embedding_id -> embedding）
         self._query_cache = {}

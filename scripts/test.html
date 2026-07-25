@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>测试</title>
+</head>
+<body>
+    <h1>Wiki 知识图谱测试</h1>
+    <p>如果能看到这个，说明 HTML 文件正常。</p>
+    <div id="test"></div>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script>
+        var chart = echarts.init(document.getElementById('test'));
+        var option = {{
+            title: {{ text: '测试图表' }},
+            xAxis: {{ type: 'category', data: ['A', 'B', 'C'] }},
+            yAxis: {{ type: 'value' }},
+            series: [{{
+                data: [1, 2, 3],
+                type: 'bar'
+            }}]
+        }};
+        chart.setOption(option);
+    </script>
+</body>
+</html>

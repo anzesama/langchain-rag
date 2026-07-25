@@ -18,6 +18,9 @@ ml_env/
 # IDE
 .vscode/
 .idea/
+
+# pi coding agent
+.pi/
 *.swp
 *.swo
 *~

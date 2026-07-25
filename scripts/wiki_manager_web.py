@@ -1277,13 +1277,13 @@ if (data.relations.length === 0) {
 
         // 知识图谱可视化
         function loadGraph() {
+            console.log('[graph] loadGraph called, entities=', entities.length, ' relations=', relations.length);
             const container = document.getElementById('graph-chart');
+            if (!container) { console.error('[graph] container #graph-chart not found'); return; }
 
             if (graphChart) {
                 graphChart.dispose();
             }
-
-            graphChart = echarts.init(container);
 
             // 准备数据
             const typeSet = [...new Set(entities.map(e => e.type || '未分类'))];
@@ -1296,7 +1296,7 @@ if (data.relations.length === 0) {
                 category: typeMap[e.type || '未分类'] || 0,
                 symbolSize: Math.max(30, Math.min(80, 25 + (e.name || '').length * 6)),
                 itemStyle: {
-                    color: `hsl(${(typeMap[e.type || '未分类'] || 0) * 137.508 % 360}, 70%, 60%)`
+                    color: 'hsl(' + ((typeMap[e.type || '未分类'] || 0) * 137.508 % 360) + ', 70%, 60%)'
                 },
                 _raw: e
             }));
@@ -1308,68 +1308,76 @@ if (data.relations.length === 0) {
                 lineStyle: { width: 2, curveness: 0.3 }
             }));
 
-            console.log(`[graph] nodes=${nodes.length}, links=${links.length}`);
+            console.log('[graph] nodes:', nodes.length, 'links:', links.length);
+            console.log('[graph] container size:', container.offsetWidth, 'x', container.offsetHeight);
 
-            const option = {
-                title: {
-                    text: 'Wiki 知识图谱',
-                    left: 'center'
-                },
-                tooltip: {
-                    formatter: function(params) {
-                        if (params.dataType === 'node') {
-                            const e = params.data._raw;
-                            let html = `<strong>${escapeHtml(e.name || '未知')}</strong><br/>`;
-                            html += `类型: ${escapeHtml(e.type || '未分类')}<br/>`;
-                            if (e.properties) {
-                                try {
-                                    let props = typeof e.properties === 'string' ? JSON.parse(e.properties) : e.properties;
-                                    if (props && typeof props === 'object') {
-                                        Object.entries(props).forEach(([k, v]) => {
-                                            html += `${escapeHtml(k)}: ${escapeHtml(String(v))}<br/>`;
-                                        });
-                                    } else {
-                                        html += `属性: ${escapeHtml(String(e.properties))}<br/>`;
+            // 延迟初始化——等待面板 display:block 后浏览器 reflow
+            setTimeout(function() {
+                console.log('[graph] container size after timeout:', container.offsetWidth, 'x', container.offsetHeight);
+                graphChart = echarts.init(container);
+
+                const option = {
+                    title: {
+                        text: 'Wiki 知识图谱',
+                        left: 'center'
+                    },
+                    tooltip: {
+                        formatter: function(params) {
+                            if (params.dataType === 'node') {
+                                const e = params.data._raw;
+                                var html = '<strong>' + escapeHtml(e.name || '未知') + '</strong><br/>';
+                                html += '类型: ' + escapeHtml(e.type || '未分类') + '<br/>';
+                                if (e.properties) {
+                                    try {
+                                        var props = typeof e.properties === 'string' ? JSON.parse(e.properties) : e.properties;
+                                        if (props && typeof props === 'object') {
+                                            Object.keys(props).forEach(function(k) {
+                                                html += escapeHtml(k) + ': ' + escapeHtml(String(props[k])) + '<br/>';
+                                            });
+                                        } else {
+                                            html += '属性: ' + escapeHtml(String(e.properties)) + '<br/>';
+                                        }
+                                    } catch (err) {
+                                        html += '属性: ' + escapeHtml(String(e.properties)) + '<br/>';
                                     }
-                                } catch (err) {
-                                    html += `属性: ${escapeHtml(String(e.properties))}<br/>`;
                                 }
+                                return html;
+                            } else {
+                                return escapeHtml(params.data.source || '未知') + ' - ' + escapeHtml(params.data.name || '未知') + ' - ' + escapeHtml(params.data.target || '未知');
                             }
-                            return html;
-                        } else {
-                            return `${escapeHtml(params.data.source || '未知')} - ${escapeHtml(params.data.name || '未知')} - ${escapeHtml(params.data.target || '未知')}`;
                         }
-                    }
-                },
-                legend: [{
-                    data: typeSet,
-                    orient: 'horizontal',
-                    top: 30
-                }],
-                series: [{
-                    type: 'graph',
-                    layout: 'force',
-                    data: nodes,
-                    links: links,
-                    categories: typeSet.map(t => ({ name: t })),
-                    roam: true,
-                    label: { show: true, position: 'right' },
-                    force: {
-                        repulsion: 300,
-                        edgeLength: 120
                     },
-                    lineStyle: {
-                        color: 'source',
-                        curveness: 0.3
-                    },
-                    emphasis: {
-                        focus: 'adjacency',
-                        lineStyle: { width: 4 }
-                    }
-                }]
-            };
+                    legend: [{
+                        data: typeSet,
+                        orient: 'horizontal',
+                        top: 30
+                    }],
+                    series: [{
+                        type: 'graph',
+                        layout: 'force',
+                        data: nodes,
+                        links: links,
+                        categories: typeSet.map(function(t){ return { name: t }; }),
+                        roam: true,
+                        label: { show: true, position: 'right' },
+                        force: {
+                            repulsion: 300,
+                            edgeLength: 120
+                        },
+                        lineStyle: {
+                            color: 'source',
+                            curveness: 0.3
+                        },
+                        emphasis: {
+                            focus: 'adjacency',
+                            lineStyle: { width: 4 }
+                        }
+                    }]
+                };
 
-            graphChart.setOption(option);
+                graphChart.setOption(option);
+                console.log('[graph] setOption done');
+            }, 100);
         }
 
         // 导出图谱

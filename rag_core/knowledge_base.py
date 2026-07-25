@@ -14,7 +14,7 @@ from rag_config import (
     LSH_DIM, LSH_NBITS, NOVEL_CHAPTERS_DIR, SYNC_DOUBLE_WRITE,
 )
 from rag_core.document_loader import load_document, chunk_documents, load_directory
-from rag_core.vector_store import VectorStoreManager
+from rag_core.vector_store_libsql import VectorStoreManager
 from rag_core.rag_pipeline import RagPipeline
 from rag_core.auto_importer import AutoImportManager
 from rag_core.parent_index_builder import build_parent_index_async

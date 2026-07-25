@@ -22,7 +22,7 @@ VECTOR_STORE_PERSIST_DIR = STORAGE_DIR / VECTOR_STORE_NAME
 VECTOR_DIMENSION = 512
 
 # ChromaDB 持久化目录
-CHROMA_PERSIST_DIR = STORAGE_DIR / "chroma_db"
+LIBSQL_DICTIONARY_PATH = STORAGE_DIR / "knowledge_base.db"
 
 # ==================== Embedding 配置 ====================
 EMBEDDING_MODE = os.getenv("RAG_EMBEDDING_MODE", "local")  # "local" | "openai"

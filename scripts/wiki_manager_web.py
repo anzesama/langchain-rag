@@ -471,9 +471,35 @@ HTML_TEMPLATE = """
             from { top: -50px; opacity: 0; }
             to { top: 20px; opacity: 1; }
         }
+
+        .connecting-hint {
+            position: fixed;
+            top: 70px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #e6f7ff;
+            border: 2px solid #1890ff;
+            border-radius: 6px;
+            padding: 8px 20px;
+            z-index: 2000;
+            font-size: 14px;
+            color: #0050b3;
+            display: none;
+        }
+        .connecting-hint .cancel-link {
+            margin-left: 12px;
+            color: #ff4d4f;
+            cursor: pointer;
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
+    <div id="connecting-hint" class="connecting-hint">
+        正在创建关系：已选中 <strong id="connecting-source-name"></strong>，
+        请点击目标节点完成连线
+        <span class="connecting-link" onclick="cancelConnecting()">取消</span>
+    </div>
     <div class="container">
         <header>
             <h1>Wiki 知识图谱管理系统</h1>
@@ -501,73 +527,20 @@ HTML_TEMPLATE = """
 
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
-            <button class="nav-tab active" data-panel="entities">实体管理</button>
-            <button class="nav-tab" data-panel="relations">关系管理</button>
-            <button class="nav-tab" data-panel="graph">知识图谱</button>
+            <button class="nav-tab active" data-panel="graph">知识图谱</button>
             <button class="nav-tab" data-panel="llm">LLM 辅助判断</button>
-            <button class="nav-tab" data-panel="sync">数据同步</button>
             <button class="nav-tab" data-panel="search">知识库搜索</button>
         </div>
 
-        <!-- Entities Panel -->
-        <div id="panel-entities" class="panel">
-            <div class="panel-header">
-                <div class="panel-title">实体列表</div>
-                <div class="search-bar">
-                    <input type="text" id="entity-search" class="search-input" placeholder="搜索实体..." onkeyup="filterEntities()">
-                    <button class="btn btn-primary" onclick="openAddEntityModal()">+ 添加实体</button>
-                </div>
-            </div>
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>名称</th>
-                        <th>类型</th>
-                        <th>属性</th>
-                        <th>来源</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody id="entity-table-body">
-                    <tr><td colspan="6" class="empty-state">加载中...</td></tr>
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Relations Panel -->
-        <div id="panel-relations" class="panel" style="display: none;">
-            <div class="panel-header">
-                <div class="panel-title">关系列表</div>
-                <div class="search-bar">
-                    <input type="text" id="relation-search" class="search-input" placeholder="搜索关系..." onkeyup="filterRelations()">
-                    <button class="btn btn-primary" onclick="openAddRelationModal()">+ 添加关系</button>
-                </div>
-            </div>
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>源实体</th>
-                        <th>关系类型</th>
-                        <th>目标实体</th>
-                        <th>来源</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody id="relation-table-body">
-                    <tr><td colspan="6" class="empty-state">加载中...</td></tr>
-                </tbody>
-            </table>
-        </div>
-
         <!-- Graph Panel -->
-        <div id="panel-graph" class="panel" style="display: none;">
+        <div id="panel-graph" class="panel">
             <div class="panel-header">
                 <div class="panel-title">知识图谱可视化</div>
                 <div class="graph-controls">
-                    <button class="btn btn-primary" onclick="loadGraph()">刷新图谱</button>
-                    <button class="btn btn-secondary" onclick="exportGraph()">导出图片</button>
+                    <button class="btn btn-primary" onclick="openAddEntityModal()">+ 添加实体</button>
+                    <button class="btn btn-primary" onclick="openAddRelationModal()">+ 添加关系</button>
+                    <button class="btn btn-secondary" onclick="loadGraph()">刷新</button>
+                    <button class="btn btn-secondary" onclick="exportGraph()">导出</button>
                 </div>
             </div>
             <div class="graph-container" id="graph-container">
@@ -578,6 +551,17 @@ HTML_TEMPLATE = """
                 <div id="detail-panel" class="detail-panel">
                     <h3>实体详情</h3>
                     <div id="detail-content"></div>
+                    <div class="detail-actions" style="margin-top: 12px;">
+                    <button class="btn btn-primary" onclick="editSelectedEntity()">编辑</button>
+                    <button class="btn btn-danger" onclick="deleteSelectedEntity()">删除</button>
+                    <button class="btn btn-success" onclick="startConnectingFromSelectedEntity()">连线创建关系</button>
+                    </div>
+                    <h4 style="margin-top: 16px;">关联关系</h4>
+                    <div id="related-relations"></div>
+                </div>
+                <div id="detail-empty" class="detail-panel" style="display: block;">
+                    <h3>实体详情</h3>
+                    <p style="color: #999; text-align: center; padding: 40px 0;">点击图谱中的节点查看实体详情</p>
                 </div>
             </div>
         </div>
@@ -679,7 +663,7 @@ HTML_TEMPLATE = """
             <div class="modal-header" id="relation-modal-title">添加关系</div>
             <div class="form-group">
                 <label>源实体</label>
-                <input type="text" id="relation-source" placeholder="输入源实体名称">
+                <select id="relation-source"><option value="">选择源实体</option></select>
             </div>
             <div class="form-group">
                 <label>关系类型</label>
@@ -697,7 +681,7 @@ HTML_TEMPLATE = """
             </div>
             <div class="form-group">
                 <label>目标实体</label>
-                <input type="text" id="relation-target" placeholder="输入目标实体名称">
+                <select id="relation-target"><option value="">选择目标实体</option></select>
             </div>
             <div class="form-group">
                 <label>来源章节</label>
@@ -743,6 +727,9 @@ HTML_TEMPLATE = """
         let editingEntityId = null;
         let editingRelationId = null;
         let graphChart = null;
+        let selectedEntity = null;
+        let connectingSource = null;
+        let connectingSourceName = null;
 
         // ========== 面板切换 ==========
         function showPanel(panelName, evt) {
@@ -785,6 +772,10 @@ HTML_TEMPLATE = """
             loadStats();
             loadEntities();
             loadRelations();
+            // 等待 entities 和 relations 加载完成后渲染图谱
+            Promise.all([loadEntities(), loadRelations()]).then(function() {
+                loadGraph();
+            });
         });
 
         // ========== 页面关闭提示 ==========
@@ -822,7 +813,6 @@ HTML_TEMPLATE = """
                 const data = await res.json();
 
                 entities = data.entities;
-                renderEntityTable(entities);
                 loadStats();
             } catch (e) {
                 console.error("Fetch Error:", e);
@@ -830,67 +820,8 @@ HTML_TEMPLATE = """
             }
         }
 
-        // 渲染实体表格
-        function renderEntityTable(data) {
-            const tbody = document.getElementById('entity-table-body');
-
-            if (data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无实体</td></tr>';
-                return;
-            }
-
-            tbody.innerHTML = data.map(entity => {
-                let propsDisplay = '-';
-                try {
-                    if (entity.properties) {
-                        const props = typeof entity.properties === 'string' ? JSON.parse(entity.properties) : entity.properties;
-                        if (props && typeof props === 'object') {
-                            propsDisplay = Object.keys(props).join(', ');
-                        }
-                    }
-                } catch (e) {
-                        console.error("JSON Parse Error:", e);
-                    console.error('解析实体属性失败:', e);
-                }
-                return `
-                    <tr>
-                        <td>${entity.id ? entity.id.substring(0, 8) : '-'}</td>
-                        <td style="font-weight: bold;">${escapeHtml(entity.name || '')}</td>
-                        <td><span class="type-badge type-${entity.type || '未分类'}">${entity.type || '未分类'}</span></td>
-                        <td style="color: #666; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(propsDisplay)}</td>
-                        <td>${entity.source_chapter || '-'}</td>
-                        <td>
-                            <div class="action-buttons">
-                                <button class="btn btn-secondary" onclick="openEditEntityModal('${entity.id || ''}')">编辑</button>
-                                <button class="btn btn-danger" onclick="deleteEntity('${entity.id || ''}')">删除</button>
-                                <button class="btn btn-success" onclick="approveEntity('${entity.id || ''}')">批准</button>
-                            </div>
-                        </td>
-                    </tr>
-                `;
-            }).join('');
-        }
-
-        // 过滤实体
-        function filterEntities() {
-            const search = document.getElementById('entity-search').value.toLowerCase();
-            const filtered = entities.filter(e => {
-                const nameMatch = (e.name || '').toLowerCase().includes(search);
-                let propsMatch = false;
-                try {
-                    if (e.properties) {
-                        const props = typeof e.properties === 'string' ? JSON.parse(e.properties) : e.properties;
-                        if (props && typeof props === 'object') {
-                            propsMatch = Object.values(props).some(v => v.toString().toLowerCase().includes(search));
-                        }
-                    }
-                } catch (err) {
-                    console.error('解析实体属性失败:', err);
-                }
-                return nameMatch || propsMatch;
-            });
-            renderEntityTable(filtered);
-        }
+        // 渲染实体表格（已移至图谱面板）
+        function renderEntityTable() { /* moved to graph */ }
 
         // 实体模态框操作
         function openAddEntityModal() {
@@ -997,7 +928,6 @@ HTML_TEMPLATE = """
                 const data = await res.json();
 
                 relations = data.relations;
-                renderRelationTable(relations);
                 loadStats();
             } catch (e) {
                 console.error("Fetch Error:", e);
@@ -1005,51 +935,26 @@ HTML_TEMPLATE = """
             }
         }
 
-        // 渲染关系表格
-        function renderRelationTable(data) {
-            const tbody = document.getElementById('relation-table-body');
-
-            if (data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无关系</td></tr>';
-                return;
-            }
-
-            tbody.innerHTML = data.map(rel => `
-                <tr>
-                    <td>${rel.id}</td>
-                    <td style="font-weight: bold;">${escapeHtml(rel.source_name || '未知')}</td>
-                    <td><span class="type-badge type-流派" style="background: #e6f7ff;">${rel.rel_type}</span></td>
-                    <td style="font-weight: bold;">${escapeHtml(rel.target_name || '未知')}</td>
-                    <td>${rel.source_chapter || '-'}</td>
-                    <td>
-                        <div class="action-buttons">
-                            <button class="btn btn-secondary" onclick="showEntityContext('${escapeHtml(rel.source_name || '')}', 'source')">查看上下文</button>
-                            <button class="btn btn-danger" onclick="deleteRelation(${rel.id})">删除</button>
-                            <button class="btn btn-success" onclick="approveRelation(${rel.id})">批准</button>
-                        </div>
-                    </td>
-                </tr>
-            `).join('');
-        }
-
-        // 过滤关系
-        function filterRelations() {
-            const search = document.getElementById('relation-search').value.toLowerCase();
-            const filtered = relations.filter(r =>
-                (r.source_name || '').toLowerCase().includes(search) ||
-                (r.target_name || '').toLowerCase().includes(search) ||
-                r.rel_type.toLowerCase().includes(search)
-            );
-            renderRelationTable(filtered);
-        }
+        // 渲染关系表格（已移至图谱面板）
+        function renderRelationTable() { /* moved to graph */ }
 
         // 关系模态框操作
         function openAddRelationModal() {
             editingRelationId = null;
             document.getElementById('relation-modal-title').textContent = '添加关系';
-            document.getElementById('relation-source').value = '';
-            document.getElementById('relation-type').value = '持有';
-            document.getElementById('relation-target').value = '';
+            var sourceSelect = document.getElementById('relation-source');
+            sourceSelect.innerHTML = '<option value="">选择源实体</option>';
+            entities.forEach(function(e) {
+                var name = e.name || '(未命名实体)';
+                sourceSelect.innerHTML += '<option value="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>';
+            });
+        document.getElementById('relation-type').value = '持有';
+            var targetSelect = document.getElementById('relation-target');
+            targetSelect.innerHTML = '<option value="">选择目标实体</option>';
+            entities.forEach(function(e) {
+                var name = e.name || '(未命名实体)';
+                targetSelect.innerHTML += '<option value="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>';
+            });
             document.getElementById('relation-source-chapter').value = '';
             document.getElementById('relation-modal').style.display = 'block';
         }
@@ -1065,29 +970,38 @@ HTML_TEMPLATE = """
             const target = document.getElementById('relation-target').value.trim();
             const sourceChapter = document.getElementById('relation-source-chapter').value;
 
-            if (!source || !target) {
-                showToast('请输入源实体和目标实体', 'error');
+            // 防御 null 字符串
+            var safeSource = (source === 'null' || source === 'undefined') ? '' : source;
+            var safeTarget = (target === 'null' || target === 'undefined') ? '' : target;
+
+            if (!safeSource || !safeTarget) {
+                showToast('请选择源实体和目标实体', 'error');
                 return;
             }
 
             try {
+                const postBody = JSON.stringify({source_name: safeSource, rel_type: type, target_name: safeTarget, source_chapter: sourceChapter});
+
                 const res = await fetch('/api/relations', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({source_name: source, rel_type: type, target_name: target, source_chapter: sourceChapter})
+                    cache: 'no-store',
+                    body: postBody
                 });
                 const data = await res.json();
+
                 if (data.success) {
                     showToast('保存成功', 'success');
                     closeRelationModal();
-                    loadRelations();
+                    cancelConnecting();
+                    await loadRelations();
                     loadStats();
                     loadGraph();
                 } else {
                     showToast('保存失败: ' + data.error, 'error');
                 }
             } catch (e) {
-                console.error("Fetch Error:", e);
+                console.error('Fetch Error:', e);
                 showToast('保存失败: ' + e.message, 'error');
             }
         }
@@ -1174,6 +1088,153 @@ if (data.relations.length === 0) {
 
         function closeContextModal() {
             document.getElementById('context-modal').style.display = 'none';
+        }
+
+        // ========== 图谱详情面板 ==========
+        function showEntityDetail(entityObj) {
+            selectedEntity = entityObj;
+            document.getElementById('detail-panel').style.display = 'block';
+            document.getElementById('detail-empty').style.display = 'none';
+            var html = '<table class="data-table"><tr><th>属性</th><th>值</th></tr>';
+            html += '<tr><td>名称</td><td>' + (entityObj.name || '') + '</td></tr>';
+            html += '<tr><td>类型</td><td>' + (entityObj.type || '未分类') + '</td></tr>';
+            html += '<tr><td>来源</td><td>' + (entityObj.source_chapter || '') + '</td></tr>';
+            if (entityObj.properties) {
+                try {
+                    var props = typeof entityObj.properties === 'string' ? JSON.parse(entityObj.properties) : entityObj.properties;
+                    if (props && typeof props === 'object') {
+                        Object.keys(props).forEach(function(k) {
+                            html += '<tr><td>' + k + '</td><td>' + props[k] + '</td></tr>';
+                        });
+                    }
+                } catch(e) {}
+            }
+            html += '</table>';
+            document.getElementById('detail-content').innerHTML = html;
+            var rels = getEntityRelations(entityObj.id);
+            var relHtml = '';
+            if (rels.length === 0) {
+                relHtml = '<p style="color:#999">暂无关系</p>';
+            } else {
+                rels.forEach(function(r) {
+                    relHtml += '<div style="padding:8px;border-bottom:1px solid #eee;">';
+                    relHtml += (r.source_name || r.source_id) + ' -> <strong>' + (r.rel_type || '') + '</strong> -> ' + (r.target_name || r.target_id);
+                    relHtml += ' <button class="btn btn-danger" style="padding:2px 8px;font-size:12px" onclick="deleteRelationById(' + r.id + ')">删除</button>';
+                    relHtml += '</div>';
+                });
+            }
+            document.getElementById('related-relations').innerHTML = relHtml;
+        }
+
+        function getEntityRelations(entityId) {
+            return relations.filter(function(r) {
+                return r.source_id === entityId || r.target_id === entityId;
+            });
+        }
+
+        async function deleteRelationById(relId) {
+            if (!confirm('确定删除此关系？')) return;
+            try {
+                var res = await fetch('/api/relations/' + relId, { method: 'DELETE' });
+                var data = await res.json();
+                if (data.success) {
+                    showToast('关系已删除', 'success');
+                    await loadRelations();
+                    loadGraph();
+                    if (selectedEntity) showEntityDetail(selectedEntity);
+                } else {
+                    showToast('删除失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch(e) {
+                showToast('删除失败: ' + e.message, 'error');
+            }
+        }
+
+        function editSelectedEntity() {
+            if (!selectedEntity) return;
+            openEditEntityModal(selectedEntity.id);
+        }
+
+        function startConnectingFromSelectedEntity() {
+            if (!selectedEntity) return;
+            startConnectingFromEntity(selectedEntity);
+        }
+
+        function cancelConnecting() {
+            connectingSource = null;
+            connectingSourceName = null;
+            document.getElementById('connecting-hint').style.display = 'none';
+            graphChart.dispatchAction({ type: 'unselect', seriesIndex: 0 });
+            graphChart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+        }
+
+        function startConnectingFromEntity(entityObj) {
+            connectingSource = entityObj.id;
+            connectingSourceName = entityObj.name;
+            document.getElementById('connecting-source-name').textContent = entityObj.name;
+            document.getElementById('connecting-hint').style.display = 'block';
+        }
+
+        function completeConnection(targetEntity) {
+            if (!connectingSource) return;
+            var srcName = connectingSourceName;
+            var tgtName = targetEntity.name;
+            cancelConnecting();
+            var srcId = connectingSource;
+            var tgtId = targetEntity.id;
+            // 直接打开弹窗并预填
+            editingRelationId = null;
+            document.getElementById('relation-modal-title').textContent = '创建关系';
+            var srcSelect = document.getElementById('relation-source');
+            srcSelect.innerHTML = '<option value="' + escapeHtml(srcName) + '" selected>' + escapeHtml(srcName) + '</option>';
+            srcSelect.disabled = true;
+            var tgtSelect = document.getElementById('relation-target');
+            tgtSelect.innerHTML = '<option value="' + escapeHtml(tgtName) + '" selected>' + escapeHtml(tgtName) + '</option>';
+            tgtSelect.disabled = true;
+            document.getElementById('relation-type').value = '持有';
+            document.getElementById('relation-source-chapter').value = '';
+            document.getElementById('relation-modal').style.display = 'block';
+        }
+
+        async function openAddRelationModalForConnecting(srcId, srcName, tgtId, tgtName) {
+            editingRelationId = null;
+            document.getElementById('relation-modal-title').textContent = '创建关系';
+
+            var srcSelect = document.getElementById('relation-source');
+            srcSelect.innerHTML = '<option value="' + srcName + '" selected>' + srcName + '</option>';
+            srcSelect.disabled = true;
+
+            var tgtSelect = document.getElementById('relation-target');
+            tgtSelect.innerHTML = '<option value="' + tgtName + '" selected>' + tgtName + '</option>';
+            tgtSelect.disabled = true;
+
+            document.getElementById('relation-type').value = '';
+            document.getElementById('relation-source-chapter').value = '';
+
+            document.getElementById('relation-modal').style.display = 'block';
+        }
+
+        async function deleteSelectedEntity() {
+            if (!selectedEntity) return;
+            if (!confirm('确定删除实体 "' + selectedEntity.name + '"?')) return;
+            try {
+                var res = await fetch('/api/entities/' + selectedEntity.id, { method: 'DELETE' });
+                var data = await res.json();
+                if (data.success) {
+                    showToast('实体已删除', 'success');
+                    selectedEntity = null;
+                    document.getElementById('detail-panel').style.display = 'none';
+                    document.getElementById('detail-empty').style.display = 'block';
+                    await loadEntities();
+                    await loadRelations();
+                    loadGraph();
+                    loadStats();
+                } else {
+                    showToast('删除失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch(e) {
+                showToast('删除失败: ' + e.message, 'error');
+            }
         }
 
         // 数据同步
@@ -1377,6 +1438,24 @@ if (data.relations.length === 0) {
 
                 graphChart.setOption(option);
                 console.log('[graph] setOption done');
+
+                graphChart.off('click');
+                graphChart.on('click', function(params) {
+                    if (params.dataType === 'node' && params.data._raw) {
+                        if (connectingSource !== null) {
+                            if (params.data._raw.id === connectingSource) {
+                                showToast('不能连接自身', 'error');
+                                return;
+                            }
+                            completeConnection(params.data._raw);
+                        } else {
+                            showEntityDetail(params.data._raw);
+                        }
+                    }
+                });
+
+                document.getElementById('graph-entity-count').textContent = entities.length;
+                document.getElementById('graph-relation-count').textContent = relations.length;
             }, 100);
         }
 
@@ -1820,7 +1899,8 @@ def add_relation():
 
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"success": False, "error": "操作失败，请查看日志"}), 500
+        logger.error(f"add_relation 失败: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/api/entities/batch-delete', methods=['POST'])

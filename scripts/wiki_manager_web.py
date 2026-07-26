@@ -826,6 +826,38 @@ HTML_TEMPLATE = """
         function renderEntityTable() { /* moved to graph */ }
 
         // 实体模态框操作
+        var CUSTOM_TYPES_KEY = 'wiki_custom_entity_types';
+        var PRESET_TYPES = ['人物', '蛊虫', '势力', '流派', '地点', '境界', '未分类'];
+
+        function getCustomTypes() {
+            try {
+                var saved = localStorage.getItem(CUSTOM_TYPES_KEY);
+                return saved ? JSON.parse(saved) : [];
+            } catch(e) { return []; }
+        }
+
+        function saveCustomType(name) {
+            var types = getCustomTypes();
+            if (types.indexOf(name) < 0 && PRESET_TYPES.indexOf(name) < 0 && name !== '__custom__') {
+                types.push(name);
+                localStorage.setItem(CUSTOM_TYPES_KEY, JSON.stringify(types));
+            }
+        }
+
+        function rebuildTypeSelect(selectedValue) {
+            var select = document.getElementById('entity-type');
+            var html = '';
+            PRESET_TYPES.forEach(function(t) {
+                html += '<option value="' + escapeHtml(t) + '"' + (t === selectedValue ? ' selected' : '') + '>' + escapeHtml(t) + '</option>';
+            });
+            var customTypes = getCustomTypes();
+            customTypes.forEach(function(t) {
+                html += '<option value="' + escapeHtml(t) + '"' + (t === selectedValue ? ' selected' : '') + '>' + escapeHtml(t) + '</option>';
+            });
+            html += '<option value="__custom__">其他... (手动输入)</option>';
+            select.innerHTML = html;
+        }
+
         function getEffectiveEntityType() {
             var select = document.getElementById('entity-type');
             if (select.value === '__custom__') {
@@ -848,7 +880,7 @@ HTML_TEMPLATE = """
             editingEntityId = null;
             document.getElementById('entity-modal-title').textContent = '添加实体';
             document.getElementById('entity-name').value = '';
-            document.getElementById('entity-type').value = '未分类';
+            rebuildTypeSelect('未分类');
             document.getElementById('entity-type-custom').style.display = 'none';
             document.getElementById('entity-type-custom').value = '';
             document.getElementById('entity-properties').value = '{}';
@@ -864,21 +896,16 @@ HTML_TEMPLATE = """
             document.getElementById('entity-modal-title').textContent = '编辑实体';
             document.getElementById('entity-name').value = entity.name || '';
             var entityType = entity.type || '未分类';
-            var select = document.getElementById('entity-type');
-            var custom = document.getElementById('entity-type-custom');
-            // 检查是否在预设列表中
-            var presetValues = [];
-            for (var i = 0; i < select.options.length; i++) {
-                presetValues.push(select.options[i].value);
-            }
-            if (presetValues.indexOf(entityType) >= 0 && entityType !== '__custom__') {
-                select.value = entityType;
-                custom.style.display = 'none';
-                custom.value = '';
+            var isPreset = PRESET_TYPES.indexOf(entityType) >= 0;
+            var isCustom = getCustomTypes().indexOf(entityType) >= 0;
+            if (isPreset || isCustom) {
+                rebuildTypeSelect(entityType);
+                document.getElementById('entity-type-custom').style.display = 'none';
+                document.getElementById('entity-type-custom').value = '';
             } else {
-                select.value = '__custom__';
-                custom.style.display = 'block';
-                custom.value = entityType === '未分类' ? '' : entityType;
+                rebuildTypeSelect('__custom__');
+                document.getElementById('entity-type-custom').style.display = 'block';
+                document.getElementById('entity-type-custom').value = entityType === '未分类' ? '' : entityType;
             }
             document.getElementById('entity-properties').value = entity.properties ? JSON.stringify(JSON.parse(entity.properties), null, 2) : '{}';
             document.getElementById('entity-source').value = entity.source_chapter || '';
@@ -910,6 +937,7 @@ HTML_TEMPLATE = """
                 });
                 const data = await res.json();
                 if (data.success) {
+                    saveCustomType(type);
                     showToast('保存成功', 'success');
                     closeEntityModal();
                     loadEntities();

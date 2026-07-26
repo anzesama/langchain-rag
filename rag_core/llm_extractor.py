@@ -22,6 +22,8 @@ class LLMExtractor:
         self.api_base = AGNES_API_BASE
         self.model = LLM_MODEL
         self.max_tokens = LLM_MAX_TOKENS
+        from rag_core.wiki_db_libsql import get_wiki_db
+        self.wiki_db = get_wiki_db()
 
     def extract_all(self, text: str, source: str = None) -> Dict[str, Any]:
         """
@@ -49,8 +51,8 @@ class LLMExtractor:
 
         # 去重: LLM 结果作为基准, 过滤掉与 LLM 重复的实体
         llm_entity_names = {e["name"]: e for e in llm_result["entities"]}
-        filtered_regex = [e for e in regex_result if e["name"] not in llm_entity_names]
-        filtered_jieba = [e for e in jieba_result if e["name"] not in llm_entity_names]
+        filtered_regex = [e for e in regex_result.get("entities", []) if e["name"] not in llm_entity_names]
+        filtered_jieba = [e for e in jieba_result.get("entities", []) if e["name"] not in llm_entity_names]
 
         return {
             'llm': llm_result["entities"],

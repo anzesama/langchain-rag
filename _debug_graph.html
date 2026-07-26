@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Graph Debug</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+<style>#c{width:800px;height:500px;border:2px solid red;}</style>
+</head>
+<body>
+<div id="c"></div>
+<script>
+var chart = echarts.init(document.getElementById('c'));
+// 模拟真实数据: entities[0].name = '方源', relations[0].source_name='方源' etc
+var nodes = [{id:'方源',name:'方源'},{id:'力道',name:'力道'},{id:'星',name:'星'}];
+var links = [{source:'方源',target:'力道',name:'主修'}];
+console.log('nodes:', nodes.length, 'links:', links.length);
+chart.setOption({
+    series:[{type:'graph',layout:'force',roam:true,data:nodes,links:links,
+        label:{show:true},force:{repulsion:300,edgeLength:120}}]
+});
+</script>
+<p>nodes=3, links=1 (方源→力道)</p>
+</body>
+</html>

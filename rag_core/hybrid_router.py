@@ -18,7 +18,7 @@ from pathlib import Path
 from langchain_core.documents import Document
 
 from rag_config import logger
-from rag_core.vector_store import VectorStoreManager
+from rag_core.vector_store_libsql import VectorStoreManager
 from rag_core.parent_document_retriever import ParentDocumentRetriever
 
 

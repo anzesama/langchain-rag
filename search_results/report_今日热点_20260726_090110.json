@@ -1,0 +1,70 @@
+{
+  "query": "今日热点",
+  "search_time": "2026-07-26T09:01:10.045612",
+  "sources": {
+    "tavily": 5,
+    "github": 0,
+    "policy": 0
+  },
+  "summary": {
+    "total_parsed": 5,
+    "chromadb_imported": 14,
+    "wiki_processed": 0
+  },
+  "details": {
+    "tavily": [
+      {
+        "id": 1,
+        "source_type": "tavily",
+        "title": "全网热榜| 今日热榜",
+        "source": "https://rebang.today",
+        "document_type": "web_article",
+        "content": "今日热榜汇聚全网热搜：知乎热榜、微博热搜、百度热搜、IT之家、36氪、少数派、豆瓣、小红书、百度贴吧、虎扑、虎嗅、天涯、哔哩哔哩、小众软件、抖音、吾爱",
+        "score": 0.9853,
+        "published_date": "未知"
+      },
+      {
+        "id": 2,
+        "source_type": "tavily",
+        "title": "今日热点",
+        "source": "https://www.facebook.com/p/%E4%BB%8A%E6%97%A5%E7%83%AD%E7%82%B9-61574095903490",
+        "document_type": "web_article",
+        "content": "今日热点. 32335 likes · 14302 talking about this. 盤點國內外最新熱點帶你一起看世界趣聞資料來源均為網絡新聞，如有侵權，請聯繫刪除.",
+        "score": 0.98103,
+        "published_date": "未知"
+      },
+      {
+        "id": 3,
+        "source_type": "tavily",
+        "title": "热搜榜",
+        "source": "https://top.baidu.com/board?tab=realtime",
+        "document_type": "web_article",
+        "content": "新闻 hao123 地图 视频 贴吧 学术 更多. 首页  热搜  小说  电影  电视剧. 在外交场合，习近平总书记向外国政要介绍了中国共产党为什么能的关键密码。多国政要当面向总书记祝贺中国共产党成立105周年，表达对中国发展成就的认同。跟... 今年第12号台风“红霞”，将于7月25日夜间至26日凌晨在香港到广东陆丰一带沿海登陆。中央气象台预计，台风“红霞”登陆后... 今年第12号台风“红霞",
+        "score": 0.97676,
+        "published_date": "未知"
+      },
+      {
+        "id": 4,
+        "source_type": "tavily",
+        "title": "今日热榜- 汇聚全网热点，热门尽览无余",
+        "source": "https://hot.sapi.run",
+        "document_type": "web_article",
+        "content": "2026-07-20 19:03:37丙午年 六月undefined 星期一.",
+        "score": 0.97585,
+        "published_date": "未知"
+      },
+      {
+        "id": 5,
+        "source_type": "tavily",
+        "title": "今日热榜- 汇聚全网热点，热门尽览无余",
+        "source": "https://hot.imsyy.top",
+        "document_type": "web_article",
+        "content": "![Image 1: logo](https://hot.imsyy.top/ico/favicon.png). ![Image 2](https://hot.imsyy.top/logo/bilibili.png)哔哩哔哩. ![Image 3](https://hot.imsyy.top/logo/weibo.png)微博. ![Image 4](https://hot.imsyy.top/l",
+        "score": 0.97064,
+        "published_date": "未知"
+      }
+    ],
+    "github": [],
+    "policy": []
+  }
+}

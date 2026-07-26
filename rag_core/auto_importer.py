@@ -17,7 +17,7 @@ from langchain_core.documents import Document
 
 from rag_config import SUPPORTED_EXTENSIONS, logger
 from rag_core.document_loader import load_document, chunk_documents
-from rag_core.vector_store import VectorStoreManager
+from rag_core.vector_store_libsql import VectorStoreManager
 
 
 class AutoImportManager:
@@ -206,13 +206,8 @@ class AutoImportManager:
     def _delete_from_vector_store(self, source_rel_key: str):
         """从向量库中删除指定源文件的所有文档块"""
         try:
-            results = self.vector_store.vectorstore._collection.get(
-                where={"source": source_rel_key},
-                include=[],
-            )
-            if results.get("ids"):
-                self.vector_store.vectorstore._collection.delete(ids=results["ids"])
-                logger.info(f"已从向量库删除 {len(results['ids'])} 个文档块: {source_rel_key}")
+            deleted_count = self.vector_store.delete_by_source(source_rel_key)
+            logger.info(f"已从向量库删除 {deleted_count} 个文档块: {source_rel_key}")
         except Exception as e:
             logger.error(f"删除向量库文档失败 {source_rel_key}: {e}")
 

@@ -11,7 +11,7 @@ from rag_core import wiki_db
 
 def clean_entities():
     """清理无效实体"""
-    db = wiki_db.WikiDB('D:/class/project-config/langchain-rag/data/wiki/wiki.db')
+    db = wiki_db.WikiDB('D:/class/project-config/langchain-rag/storage/knowledge_base.db')
     db.init_db()
 
     entities = db.get_entities()

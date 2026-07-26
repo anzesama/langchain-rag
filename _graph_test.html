@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Graph Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        #chart { width: 800px; height: 600px; border: 2px solid red; }
+    </style>
+</head>
+<body>
+    <h2>ECharts Test</h2>
+    <div id="chart"></div>
+    <script>
+        const chart = echarts.init(document.getElementById('chart'));
+        chart.setOption({
+            series: [{
+                type: 'graph', layout: 'force', roam: true,
+                data: [{name:'方源'},{name:'力道'},{name:'星源'},{name:'气源'},{name:'方源持有春秋蝉'}],
+                links: [{source:'方源',target:'力道',name:'主修'}],
+                label: {show:true},
+                force: {repulsion: 300, edgeLength: 120}
+            }]
+        });
+        console.log('Chart rendered');
+    </script>
+</body>
+</html>

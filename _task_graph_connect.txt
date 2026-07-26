@@ -1,0 +1,176 @@
+# Task: 图谱点击连线创建关系
+
+## Overview
+Modify `scripts/wiki_manager_web.py`. Read it first. Apply ALL changes.
+
+## Interaction Flow
+1. 用户点击图谱中的节点 A → 高亮 A，右上角提示"请点击目标节点完成连线"
+2. 用户点击节点 B → 弹出关系编辑弹窗，自动填入 source=A, target=B
+3. 用户选择关系类型、填写描述 → 保存
+
+## Changes
+
+### 1. Add global state variable
+After `let selectedEntity = null;` add:
+```javascript
+let connectingSource = null;
+let connectingSourceName = null;
+```
+
+### 2. Add CSS for connecting mode indicator
+In the `<style>` block, add:
+```css
+.connecting-hint {
+    position: fixed;
+    top: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #e6f7ff;
+    border: 2px solid #1890ff;
+    border-radius: 6px;
+    padding: 8px 20px;
+    z-index: 2000;
+    font-size: 14px;
+    color: #0050b3;
+    display: none;
+}
+.connecting-hint .cancel-link {
+    margin-left: 12px;
+    color: #ff4d4f;
+    cursor: pointer;
+    text-decoration: underline;
+}
+```
+
+### 3. Add connecting hint HTML element
+Right after `<body>`, add:
+```html
+<div id="connecting-hint" class="connecting-hint">
+    正在创建关系：已选中 <strong id="connecting-source-name"></strong>，
+    请点击目标节点完成连线
+    <span class="connecting-link" onclick="cancelConnecting()">取消</span>
+</div>
+```
+
+### 4. Add new JS functions
+
+```javascript
+function cancelConnecting() {
+    connectingSource = null;
+    connectingSourceName = null;
+    document.getElementById('connecting-hint').style.display = 'none';
+    graphChart.dispatchAction({ type: 'unselect', seriesIndex: 0 });
+    graphChart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+}
+
+function startConnectingFromEntity(entityObj) {
+    connectingSource = entityObj.id;
+    connectingSourceName = entityObj.name;
+    document.getElementById('connecting-source-name').textContent = entityObj.name;
+    document.getElementById('connecting-hint').style.display = 'block';
+}
+
+function completeConnection(targetEntity) {
+    if (!connectingSource) return;
+    var srcName = connectingSourceName;
+    var tgtName = targetEntity.name;
+    cancelConnecting();
+    openAddRelationModalForConnecting(connectingSource, connectingSourceName, targetEntity.id, targetEntity.name);
+}
+
+async function openAddRelationModalForConnecting(srcId, srcName, tgtId, tgtName) {
+    editingRelationId = null;
+    document.getElementById('relation-modal-title').textContent = '创建关系';
+
+    var srcSelect = document.getElementById('relation-source');
+    srcSelect.innerHTML = '<option value="' + srcId + '" selected>' + srcName + '</option>';
+    srcSelect.disabled = true;
+
+    var tgtSelect = document.getElementById('relation-target');
+    tgtSelect.innerHTML = '<option value="' + tgtId + '" selected>' + tgtName + '</option>';
+    tgtSelect.disabled = true;
+
+    document.getElementById('relation-type').value = '';
+    document.getElementById('relation-source-chapter').value = '';
+
+    document.getElementById('relation-modal').style.display = 'block';
+}
+```
+
+### 5. Modify the existing click handler in loadGraph
+
+Replace the existing click handler:
+```javascript
+graphChart.off('click');
+graphChart.on('click', function(params) {
+    if (params.dataType === 'node' && params.data._raw) {
+        if (connectingSource !== null) {
+            // Connecting mode: this is the target
+            if (params.data._raw.id === connectingSource) {
+                showToast('不能连接自身', 'error');
+                return;
+            }
+            connectToTarget(params.data._raw);
+        } else {
+            showEntityDetail(params.data._raw);
+        }
+    }
+});
+```
+
+### 6. Add a connecting entry in entity detail panel
+
+In the detail-actions div, add a button:
+```html
+<button class="btn btn-success" onclick="startConnectingFromEntity(selectedEntity)">连线创建关系</button>
+```
+
+Full detail-actions should look like:
+```html
+<div class="detail-actions" style="margin-top: 12px;">
+    <button class="btn btn-primary" onclick="editSelectedEntity()">编辑</button>
+    <button class="btn btn-danger" onclick="deleteSelectedEntity()">删除</button>
+    <button class="btn btn-success" onclick="startConnectingFromSelectedEntity()">连线创建关系</button>
+</div>
+```
+
+And add the function:
+```javascript
+function startConnectingFromSelectedEntity() {
+    if (!selectedEntity) return;
+    startConnectingFromEntity(selectedEntity);
+}
+```
+
+### 7. Fix typo in existing code
+In the cancelConnecting function above, `graphChart.dispatchAction { type: 'unselect', seriesIndex: 0 };` 
+should be:
+```javascript
+graphChart.dispatchAction({ type: 'unselect', seriesIndex: 0 });
+graphChart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+```
+
+Wait - that is fine but note: `dispatchAction` takes curly braces for the param object. In the code you add, DO NOT use template literals.
+
+### 8. After saveRelation succeeds, reset connectingSource
+In saveRelation() success path, add: `cancelConnecting();`
+
+## Verification
+```
+D:/class/miniconda3/envs/ml_env/python.exe -c "import ast; ast.parse(open('scripts/wiki_manager_web.py','r',encoding='utf-8').read()); print('Syntax OK')"
+D:/class/miniconda3/envs/ml_env/python.exe -c "from scripts.wiki_manager_web import app; print('Import OK')"
+```
+
+Restart server and test:
+```bash
+start http://127.0.0.1:5000
+```
+
+## Commit
+`feat: 图谱点击连线创建关系 — 选中节点→再点击目标→弹出弹窗自动填充`
+
+## Style rules
+- Use `function()` not arrow functions
+- Use `+` concat not template literals
+- HTML double quotes `"`
+- Do not modify Python backend routes

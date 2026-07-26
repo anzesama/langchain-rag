@@ -37,7 +37,7 @@ from rag_config import BASE_DIR
 
 app = Flask(__name__)
 
-DB_PATH = BASE_DIR / 'data' / 'wiki' / 'wiki.db'
+DB_PATH = BASE_DIR / 'storage' / 'knowledge_base.db'
 CHROMA_DB_PATH = BASE_DIR / 'storage' / 'knowledge_base'
 
 
@@ -234,11 +234,8 @@ HTML_TEMPLATE = """
         <div id="sync" class="tab-content">
             <div class="card">
                 <h2>数据同步</h2>
-                <p style="color: #666; margin-bottom: 20px;">将 Wiki 数据同步到 ChromaDB 向量数据库</p>
-                <button class="btn btn-sync" onclick="syncToChromaDB()">开始同步</button>
-                <div id="sync-status" style="margin-top: 20px; padding: 15px; background: #f0f0f0; border-radius: 5px; display: none;">
-                    <div id="sync-progress">准备中...</div>
-                </div>
+                <p style="color: #666; margin-bottom: 20px;">libsql 统一存储架构下无需同步，Wiki 与向量数据在同一数据库。</p>
+            </div>
             </div>
         </div>
     </div>
@@ -418,42 +415,7 @@ HTML_TEMPLATE = """
         }
 
         // 数据同步
-        async function syncToChromaDB() {
-            const statusDiv = document.getElementById('sync-status');
-            const progressDiv = document.getElementById('sync-progress');
-            statusDiv.style.display = 'block';
-            progressDiv.innerHTML = '开始同步...';
-
-            try {
-                const res = await fetch('/api/sync', { method: 'POST' });
-                const data = await res.json();
-
-                if (data.success) {
-                    progressDiv.innerHTML = `
-                        <div style="color: #52c41a; font-weight: bold;">同步完成！</div>
-                        <div style="color: #666; margin-top: 5px;">已同步实体: ${data.entities_synced}</div>
-                        <div style="color: #666;">已同步关系: ${data.relations_synced}</div>
-                    `;
-                } else {
-                    progressDiv.innerHTML = `<div style="color: #ff4d4f;">同步失败: ${data.error}</div>`;
-                }
-            } catch (e) {
-                progressDiv.innerHTML = `<div style="color: #ff4d4f;">同步失败: ${e.message}</div>`;
-            }
-        }
-
-        async function checkSyncStatus() {
-            try {
-                const res = await fetch('/api/sync/status');
-                const data = await res.json();
-                if (data.status) {
-                    const statusDiv = document.getElementById('sync-status');
-                    const progressDiv = document.getElementById('sync-progress');
-                    statusDiv.style.display = 'block';
-                    progressDiv.innerHTML = data.status;
-                }
-            } catch (e) {
-                // 忽略错误
+        // syncToChromaDB 和 checkSyncStatus 已在 libsql 统一存储中移除
             }
         }
 
@@ -602,8 +564,7 @@ def add_entity():
             return jsonify({"success": False, "error": "实体名称不能为空"}), 400
 
         # 确保数据库存在
-        db_path = Path('D:/class/project-config/data/wiki/wiki.db')
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path = DB_PATH
 
         # 初始化数据库
         wiki_db = WikiDB(str(db_path))
@@ -615,98 +576,6 @@ def add_entity():
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
-
-
-@app.route('/api/sync', methods=['POST'])
-def sync_to_chroma():
-    """同步 Wiki 数据到 ChromaDB"""
-    try:
-        db_path = Path('D:/class/project-config/data/wiki/wiki.db')
-        chroma_path = Path('D:/class/project-config/storage/knowledge_base')
-
-        # 初始化 Wiki DB
-        wiki_db = WikiDB(str(db_path))
-        wiki_db.init_db()
-
-        # 初始化 ChromaDB
-        kb = KnowledgeBase()
-        kb.vectorstore = kb._EmbeddingWrapper(kb.embeddings)
-
-        # 获取所有实体
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute('SELECT id, name, type, properties FROM entities')
-        entities = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-
-        # 获取所有关系
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute('''
-            SELECT r.id, e1.name as source_name, e2.name as target_name, r.rel_type
-            FROM relationships r
-            JOIN entities e1 ON r.source_id = e1.id
-            JOIN entities e2 ON r.target_id = e2.id
-        ''')
-        relations = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-
-        # 同步实体到 ChromaDB
-        entities_synced = 0
-        for entity in entities:
-            try:
-                content = f"{entity['name']} ({entity['type']})\n"
-                if entity['properties']:
-                    content += f"属性: {json.dumps(entity['properties'], ensure_ascii=False)}"
-
-                # 添加到 ChromaDB
-                kb.add_document(
-                    filepath=db_path.parent / f"wiki_entity_{entity['id']}.txt",
-                    content=content,
-                    metadata={
-                        'type': 'wiki_entity',
-                        'entity_name': entity['name'],
-                        'entity_type': entity['type']
-                    }
-                )
-                entities_synced += 1
-            except Exception as e:
-                print(f"同步实体失败 {entity['name']}: {e}")
-
-        # 同步关系到 ChromaDB
-        relations_synced = 0
-        for rel in relations:
-            try:
-                content = f"{rel['source_name']} -{rel['rel_type']}-> {rel['target_name']}"
-                
-                # 添加到 ChromaDB
-                kb.add_document(
-                    filepath=db_path.parent / f"wiki_relation_{rel['id']}.txt",
-                    content=content,
-                    metadata={
-                        'type': 'wiki_relation',
-                        'source': rel['source_name'],
-                        'target': rel['target_name'],
-                        'relation_type': rel['rel_type']
-                    }
-                )
-                relations_synced += 1
-            except Exception as e:
-                print(f"同步关系失败 {rel['source_name']} -{rel['rel_type']}-> {rel['target_name']}: {e}")
-
-        return jsonify({
-            "success": True,
-            "entities_synced": entities_synced,
-            "relations_synced": relations_synced
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 400
-
-
-@app.route('/api/sync/status')
-def sync_status():
-    """获取同步状态"""
-    return jsonify({"status": ""})
 
 
 if __name__ == '__main__':

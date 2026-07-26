@@ -2,7 +2,8 @@
 
 **项目路径**：D:/class/project-config/langchain-rag
 **Python 版本**：3.9 (ml_env)
-**最后更新**：2026-07-09
+**最后更新**：2026-07-26
+**存储架构**：libsql（统一存储层）+ FAISS LSH + ChromaDB（回退）
 
 ---
 
@@ -32,10 +33,13 @@ langchain-rag/
 │
 ├── rag_core/                   # 🔧 核心代码
 │   ├── knowledge_base.py       # 知识库主类
-│   ├── vector_store.py         # 向量存储
+│   ├── vector_store.py         # ChromaDB 向量存储（回退）
+│   ├── vector_store_libsql.py  # libsql 向量存储（主存储）
 │   ├── rag_pipeline.py         # RAG 管道
 │   ├── resume_loader.py        # 断点续传加载器
 │   ├── lsh_index.py            # LSH 索引
+│   ├── wiki_db.py              # Wiki 数据库（重导出 libsql 版本）
+│   ├── wiki_db_libsql.py       # Wiki 数据库（libsql 实现）
 │   ├── parent_document_retriever.py
 │   └── ...                     # 其他核心模块
 │
@@ -46,8 +50,9 @@ langchain-rag/
 │   └── ...                     # 其他文档
 │
 ├── storage/                    # 💾 存储目录
-│   ├── knowledge_base/         # ChromaDB 数据库
-│   ├── novel_lsh.index         # LSH 索引
+│   ├── knowledge_base.db       # libsql 统一数据库（向量+Wiki）
+│   ├── knowledge_base/         # ChromaDB 数据库（兼容/回退）
+│   ├── lsh_index/              # FAISS LSH 索引
 │   ├── global_counter.json     # 全局计数器
 │   └── ...                     # 其他数据
 │
@@ -166,8 +171,10 @@ python scripts/rag_cli.py view
 
 ### 知识库管理
 - ✅ 文档自动加载和向量化
-- ✅ **断点续传**（进度文件 + ChromaDB 同步）
+- ✅ **libsql 统一存储**（向量 + Wiki 结构化数据）
+- ✅ **断点续传**（进度文件 + libsql 同步）
 - ✅ LSH 索引加速检索
+- ✅ ChromaDB 回退机制
 - ✅ 混合检索路由
 - ✅ 父子文档检索
 
@@ -195,12 +202,14 @@ python scripts/rag_cli.py view
 
 ## 📊 系统状态
 
-- **文档数量**：18,738 个块（蛊真人精校版）
-- **存储路径**：`storage/knowledge_base`
+- **文档数量**：29,000+ 个块
+- **存储架构**：libsql（主）+ ChromaDB（回退）+ FAISS LSH（加速）
+- **libsql 数据库**：`storage/knowledge_base.db`
+- **ChromaDB 数据库**：`storage/knowledge_base/`（兼容/回退）
 - **Python 环境**：ml_env (3.9.25)
 - **CLI 统一入口**：`scripts/rag_cli.py`
 - **服务管理**：自动检测 + 启动
-- **检索性能**：首次 4.9s，后续 0.03-0.05s
+- **检索性能**：LSH ~0.1ms，ChromaDB 预热后 0.03-0.05s
 
 ## 🚀 P0/P1 混合检索架构
 
@@ -261,6 +270,7 @@ python scripts/rag_cli.py view
 - ✅ 清理垃圾文件（38 个）
 - ✅ 整理目录结构（根目录文件减少 90%）
 - ✅ 重构核心脚本（集成度提升至 ⭐⭐⭐⭐⭐）
+- ✅ **libsql 迁移**（向量存储 + Wiki 数据库统一为 libsql）
 
 ### 待改进
 - ⏳ 完善文档注释
@@ -270,6 +280,15 @@ python scripts/rag_cli.py view
 ---
 
 ## 📝 更新日志
+
+### 2026-07-26 - libsql 迁移完成
+- ✅ 创建 `vector_store_libsql.py` — libsql 向量存储管理器
+- ✅ 创建 `wiki_db_libsql.py` — libsql Wiki 数据库
+- ✅ 迁移 `wiki_db.py` 重导出 libsql 版本（兼容现有代码）
+- ✅ 更新 `knowledge_base.py` 使用 libsql 向量存储
+- ✅ 创建迁移脚本：`backup_before_migration.py`、`migrate_to_libsql.py`、`rollback_libsql.py`、`verify_migration.py`
+- ✅ 创建文档：`LIBSQL_MIGRATION_GUIDE.md`、`LIBSQL_ROLLBACK_PLAN.md`
+- ✅ 更新计划文档：`20260725-libsql-migration-plan.md`
 
 ### 2026-07-05 - 脚本重构与目录整理
 - ✅ 统一存储路径
@@ -294,5 +313,5 @@ python scripts/rag_cli.py view
 
 ---
 
-**项目状态**：✅ 运行正常
-**最后维护**：2026-07-05
+**项目状态**：✅ 运行正常（libsql 统一存储）
+**最后维护**：2026-07-26

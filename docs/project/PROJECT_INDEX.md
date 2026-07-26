@@ -2,7 +2,8 @@
 
 - 项目位置：D:/class/project-config/langchain-rag
 - 归档时间：2026-07-03
-- 状态：✅ 架构升级完成
+- 最后更新：2026-07-26
+- 状态：✅ libsql 统一存储 + LSH 优先检索 + 因果排序 + 断点续传
 
 ## 📖 全局文档
 
@@ -17,16 +18,19 @@
 langchain-rag/
 ├── README.md              # 项目说明（已更新，含新架构）
 ├── rag_core/              # 核心模块
-│   ├── knowledge_base.py  # 知识库主类（重写，集成 LSH + 断点续传）
+│   ├── knowledge_base.py  # 知识库主类（重写，集成 libsql + LSH + 断点续传）
 │   ├── rag_pipeline.py    # RAG 管道（重写，LSH 优先 + 因果排序）
-│   ├── lsh_index.py       # LSH 索引管理器 (NEW!)
-│   ├── causal_sorter.py   # 因果排序器 (NEW!)
-│   ├── resume_loader.py   # 断点续传加载器 (NEW!)
+│   ├── vector_store_libsql.py  # libsql 向量存储 (NEW!)
+│   ├── vector_store.py    # ChromaDB 存储（回退）
+│   ├── wiki_db_libsql.py  # libsql Wiki 数据库 (NEW!)
+│   ├── wiki_db.py         # Wiki DB 兼容层 (NEW!)
+│   ├── lsh_index.py       # LSH 索引管理器
+│   ├── causal_sorter.py   # 因果排序器
+│   ├── resume_loader.py   # 断点续传加载器
 │   ├── auto_importer.py   # 自动导入
 │   ├── document_loader.py # 文档加载
 │   ├── document_processor.py # 增强分块器
 │   ├── embedding_service.py # Embedding服务
-│   ├── vector_store.py    # ChromaDB存储
 │   ├── hybrid_router.py   # 混合检索路由
 │   ├── parent_index_builder.py  # 后台异步构建父子索引
 │   └── parent_document_retriever.py
@@ -42,10 +46,12 @@ langchain-rag/
 │   └── 《蛊真人》精校版_utf8.txt
 ├── novel_chapters/        # 小说章节源文件
 ├── storage/               # 数据存储
-│   ├── novel_lsh.index    # FAISS LSH 索引 (NEW!)
-│   ├── id_map.pkl         # ID 映射 (NEW!)
-│   ├── progress_*.json    # per-file 进度 (NEW!)
-│   └── knowledge_base/    # ChromaDB 存储
+│   ├── knowledge_base.db  # libsql 统一数据库 (NEW!)
+│   ├── lsh_index/         # FAISS LSH 索引
+│   │   ├── index.faiss
+│   │   └── id_map.pkl
+│   ├── progress_*.json    # per-file 进度
+│   └── knowledge_base/    # ChromaDB 存储（回退）
 ├── rag_server.py          # HTTP API服务
 ├── rag_cli.py             # 命令行工具（已更新）
 ├── rag_config.py          # 统一配置（已更新）
@@ -58,23 +64,28 @@ langchain-rag/
 ## 📖 文档导航
 
 ### 核心文档
-- **README.md** - RAG系统使用说明（已更新）
-- **ARCHITECTURE_STATUS.md** - 架构状态报告（已更新）
+- **README.md** - RAG系统使用说明（已更新，含 libsql 架构）
+- **ARCHITECTURE_STATUS.md** - 架构状态报告（已更新，含 libsql）
 - **UPGRADE_SUMMARY.md** - 升级总结（已更新）
-- **PROJECT_SUMMARY.md** - 项目总结
+- **PROJECT_SUMMARY.md** - 项目总结（已更新）
+- **LIBSQL_MIGRATION_GUIDE.md** - libsql 迁移指南
+- **LIBSQL_ROLLBACK_PLAN.md** - libsql 回退预案
 
 ## 🚀 核心功能
 
 1. **文档管理** - 自动索引、增量更新
-2. **分批加载** - 大文件自动分批（Embedding 256/批，ChromaDB 500/批）
-3. **向量检索** - LSH 优先 (~0.1ms) + ChromaDB HNSW 回退
-4. **因果排序** - 按 global_order 对小说类文档排序
-5. **断点续传** - 大文件加载支持中断恢复
-5. **生成回答** - RAG检索增强生成
-6. **混合检索路由** - 自动根据文档属性和查询意图选择检索模式
-7. **后台异步构建父子索引** - 文件入库后自动在后台构建父子索引
-8. **API服务** - HTTP API + pi Agent集成
-9. **小说管理** - 章节分割、批量加载、进度跟踪
+2. **libsql 统一存储** - 向量数据 + Wiki 结构化数据统一存储
+3. **分批加载** - 大文件自动分批（Embedding 256/批，libsql 500/批）
+4. **向量检索** - LSH 优先 (~0.1ms) + ChromaDB HNSW 回退
+5. **因果排序** - 按 global_order 对小说类文档排序
+6. **断点续传** - 大文件加载支持中断恢复
+7. **生成回答** - RAG检索增强生成
+8. **混合检索路由** - 自动根据文档属性和查询意图选择检索模式
+9. **后台异步构建父子索引** - 文件入库后自动在后台构建父子索引
+10. **Wiki 结构化存储** - libsql 实体/关系/事实管理
+11. **API服务** - HTTP API + pi Agent集成
+12. **小说管理** - 章节分割、批量加载、进度跟踪
+13. **迁移工具** - 备份/迁移/回滚/验证脚本
 
 ## 📊 项目统计
 
@@ -98,4 +109,4 @@ langchain-rag/
 
 ---
 
-*最后更新：2026-07-03（LSH 优先检索 + 因果排序 + 断点续传架构升级完成）*
+*最后更新：2026-07-26（libsql 统一存储 + LSH 优先检索 + 因果排序 + 断点续传）*

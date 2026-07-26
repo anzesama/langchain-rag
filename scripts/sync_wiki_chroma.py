@@ -16,7 +16,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from rag_core.wiki_db import get_wiki_db
-from rag_core.vector_store import VectorStoreManager
+from rag_core.vector_store_libsql import VectorStoreManager
 
 logger = logging.getLogger(__name__)
 

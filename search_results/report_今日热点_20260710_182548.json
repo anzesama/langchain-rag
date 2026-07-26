@@ -1,0 +1,136 @@
+{
+  "query": "今日热点",
+  "search_time": "2026-07-10T18:25:48.609358",
+  "sources": {
+    "tavily": 5,
+    "github": 5,
+    "policy": 0
+  },
+  "summary": {
+    "total_parsed": 10,
+    "chromadb_imported": 10,
+    "wiki_processed": 0
+  },
+  "details": {
+    "tavily": [
+      {
+        "id": 1,
+        "source_type": "tavily",
+        "title": "今日热点",
+        "source": "https://www.facebook.com/p/%E4%BB%8A%E6%97%A5%E7%83%AD%E7%82%B9-61574095903490",
+        "document_type": "web_article",
+        "content": "今日热点. 31614 likes · 8498 talking about this. 盤點國內外最新熱點帶你一起看世界趣聞資料來源均為網絡新聞，如有侵權，請聯繫刪除.",
+        "score": 0.6947383,
+        "published_date": "未知"
+      },
+      {
+        "id": 2,
+        "source_type": "tavily",
+        "title": "今日热榜- 全站热榜",
+        "source": "https://rebang.today",
+        "document_type": "web_article",
+        "content": "## 福建晋江鞋厂火灾已致 28 人死亡，现场疏散 213 人，500 余人投入救援. ## 台风巴威又改路线了. ## 为什么腾讯几乎没有人工客服？. 因为企业微信群个人微信无法退群，现在许多商家开始诱导用户通过个人微信扫码加企业微信群，加入后无法退群，只能接受广告轰炸。打客服电话两小时，无人工接听。上网查了查，腾讯客服 「 有口皆碑 」，几乎无人打. ## 雷军提出车内空间不该固定，小米澎程主",
+        "score": 0.6202772,
+        "published_date": "未知"
+      },
+      {
+        "id": 3,
+        "source_type": "tavily",
+        "title": "baiwumm/next-daily-hot: 今日热榜是一个基于Next.js 构建的 ...",
+        "source": "https://github.com/baiwumm/next-daily-hot",
+        "document_type": "web_article",
+        "content": "## Navigation Menu. # Search code, repositories, users, issues, pull requests... You signed in with another tab or window. * Notifications  You must be signed in to change notification settings. ## Fo",
+        "score": 0.5999311,
+        "published_date": "未知"
+      },
+      {
+        "id": 4,
+        "source_type": "tavily",
+        "title": "北美华人e网--Today's Highlights-今日热点",
+        "source": "https://huaren.us/showforum.html?forumid=409",
+        "document_type": "web_article",
+        "content": "# Today's Highlights-今日热点. 今日:*26*主题:*4639*帖子:*83141*. 【今日天下0709】微软裁员补偿方案曝光；姚明一家在纽约被偶遇；Costco网红蛋白粉翻车重金属污染有附件~NEW. 加油仅$3.47！白宫推出25家“自由燃料”（Freedom Fuel）加油站有附件. 达美航空推出“基础商务舱”！票价更便宜，但不能进机场贵宾休息室，也不能免费选座. 酒",
+        "score": 0.68191797,
+        "published_date": "未知"
+      },
+      {
+        "id": 5,
+        "source_type": "tavily",
+        "title": "最新新闻事件报道_今日热点新闻头条话题社会时事排行榜 - 新浪上海",
+        "source": "https://sh.sina.com.cn/hotnews",
+        "document_type": "web_article",
+        "content": "2.   1[刘嘉玲梁朝伟冷战](http://sh.sina.com.cn/news/g/2013-09-13/111662009.html). 3.   1[麻省理工 最佳大学](http://sh.sina.com.cn/news/g/2013-09-13/113062015.html). 4.   1[每年25万人自杀死](http://sh.sina.com.cn/news/g/2013",
+        "score": 0.6765563,
+        "published_date": "未知"
+      }
+    ],
+    "github": [
+      {
+        "id": 1,
+        "source_type": "github",
+        "title": "LyLme/LyToday",
+        "source": "https://github.com/LyLme/LyToday",
+        "document_type": "github_repo",
+        "content": "LyToday今日热点\nStars: 50\nLanguage: PHP",
+        "score": 1.0,
+        "stars": 50,
+        "forks": 10,
+        "language": "PHP",
+        "readme_preview": "# LyToday今日热点\n\n>   LyToday是一个基于PHP开发的轻量级每日热点整合项目，旨在为用户提供一个简洁、高效，且无需数据库支持的每日资讯平台。项目采用模块化设计，每个功能都可以单独启用或禁用，方便用户根据实际需求进行定制\n\n**在线体验地址：**[https://60s.lylme.com/](https://60s.lylme.com/)\n\n## 功能\n\n-   **60秒读懂"
+      },
+      {
+        "id": 2,
+        "source_type": "github",
+        "title": "uxiaohan/HotList-Web",
+        "source": "https://github.com/uxiaohan/HotList-Web",
+        "document_type": "github_repo",
+        "content": "今日热榜是聚合热榜热搜平台，汇集了各大网站的热榜信息，包括微博热搜、今日头条、知乎日报、澎湃新闻、虎扑步行街、36氪、哔哩哔哩热榜，知乎、IT资讯、虎嗅网、人人都是产品经理、百度、抖音热点豆瓣小组精选等。\nStars: 433\nLanguage: Less",
+        "score": 1.0,
+        "stars": 433,
+        "forks": 80,
+        "language": "Less",
+        "readme_preview": "# 今日热榜\n\n**微博热搜、今日头条、知乎日报、虎扑步行街、36氪、澎湃新闻、哔哩哔哩热榜，知乎、IT资讯、虎嗅网、人人都是产品经理热榜百度、抖音热点豆瓣小组精选等聚合API免费接口**\n\n### 使用说明\n\nhttps://www.vvhan.com/article/zhihu-baidu-weibo-api-kaiyuan\n\n### 使用 EdgeOne Pages 一键部署\n\n[![Edg"
+      },
+      {
+        "id": 3,
+        "source_type": "github",
+        "title": "baiwumm/next-daily-hot",
+        "source": "https://github.com/baiwumm/next-daily-hot",
+        "document_type": "github_repo",
+        "content": "今日热榜 是一个基于 Next.js 构建的现代化热点聚合平台，实时汇聚各大主流网站的热门内容，为用户提供一站式的热点资讯浏览体验。\nStars: 247\nLanguage: TypeScript",
+        "score": 1.0,
+        "stars": 247,
+        "forks": 80,
+        "language": "TypeScript",
+        "readme_preview": "<div align=\"center\">\n  <img alt=\"今日热榜 Logo\" src=\"./public/logo.svg\" width=\"120\"/>\n  <h1>今日热榜</h1>\n  <p><strong>汇聚全网热点，热门尽览无余</strong></p>\n  \n  <p>\n    <a href=\"https://hot.baiwumm.com/\" target=\"_blank"
+      },
+      {
+        "id": 4,
+        "source_type": "github",
+        "title": "raysonfang/hotDog",
+        "source": "https://github.com/raysonfang/hotDog",
+        "document_type": "github_repo",
+        "content": "🐶hotDog--中文：【热狗】-- 今日热榜，一站式聚焦全网热点的爬虫项目\nStars: 34\nLanguage: Java",
+        "score": 1.0,
+        "stars": 34,
+        "forks": 12,
+        "language": "Java",
+        "readme_preview": "# hotDog--热狗\n\n今日热榜Java版，一个获取各大热门网站热门头条的聚合网站\n\n# 技术选型\n\n基础框架：Spring Boot 2.1.7\n\n爬虫框架：Webmagic 0.7.3\n\n定时任务框架：Quartz 2.3.0\n\n数据库：Mysql 8.0.16\n\n持久层：Mybatis-plus 3.1.2\n\n连接池： Druid 1.0.29\n\n接口文档：Swagger2 2.7.0\n"
+      },
+      {
+        "id": 5,
+        "source_type": "github",
+        "title": "joyce677/TrendRadar",
+        "source": "https://github.com/joyce677/TrendRadar",
+        "document_type": "github_repo",
+        "content": "一键监控今日头条、百度热搜、微博、抖音、知乎、B站等35个平台，智能关键词筛选，自动生成热点分析报告。支持企业微信、飞书、钉钉、Telegram推送，30秒网页部署，1分钟手机通知，无需编程基础。还有文字和图片版api可调用\nStars: 1833\nLanguage: HTML",
+        "score": 1.0,
+        "stars": 1833,
+        "forks": 1158,
+        "language": "HTML",
+        "readme_preview": "<div align=\"center\">\n\n# 🎯TrendRadar\n\n🚀 最快<strong>30秒</strong>部署的热点助手 —— 告别无效刷屏，只看真正关心的新闻资讯\n\n[![GitHub Stars](https://img.shields.io/github/stars/sansan0/TrendRadar?style=flat-square&logo=github&color="
+      }
+    ],
+    "policy": []
+  }
+}

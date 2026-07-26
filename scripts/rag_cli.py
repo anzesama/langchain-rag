@@ -410,7 +410,7 @@ def cmd_rebuild(args):
 def cmd_clean(args):
     """清空知识库"""
     kb = KnowledgeBase()
-    kb.vector_store.vectorstore._collection.delete(where={})
+    kb.vector_store.delete_collection()
     print("OK 知识库已清空")
 
 

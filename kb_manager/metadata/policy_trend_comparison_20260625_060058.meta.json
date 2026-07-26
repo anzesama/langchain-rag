@@ -1,0 +1,20 @@
+{
+  "title": "2025-2026 中国政策转向分析",
+  "type": "policy_trend_comparison",
+  "created_at": "2026-06-25T06:00:58",
+  "valid_until": "2026-09-23",
+  "status": "active",
+  "themes": [
+    "政策",
+    "经济",
+    "消费",
+    "就业",
+    "投资",
+    "规划",
+    "服务业",
+    "开放"
+  ],
+  "fingerprint": "9ba442f53d4b281e",
+  "file_path": "D:\\class\\project-config\\langchain-rag\\kb_manager\\analysis\\policy_trend_comparison_20260625_060058_9ba442f53d4b281e.json",
+  "data_size": 1015
+}

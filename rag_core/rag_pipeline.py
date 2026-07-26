@@ -14,7 +14,7 @@ from rag_config import (
     AGNES_API_KEY, AGNES_API_BASE, logger,
     LSH_RECALL_MIN_COUNT, LSH_RECALL_MIN_SCORE,
 )
-from rag_core.vector_store import VectorStoreManager
+from rag_core.vector_store_libsql import VectorStoreManager
 from rag_core.hybrid_router import hybrid_search
 from rag_core.causal_sorter import CausalSorter
 from rag_core.hybrid_retriever import HybridRetriever

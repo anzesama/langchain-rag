@@ -45,7 +45,7 @@ from rag_config import (
 from rag_core.document_processor import EnhancedDocumentProcessor, create_enhanced_processor
 from rag_core.embedding_service import get_embeddings
 from rag_core.lsh_index import LSHIndexManager
-from rag_core.vector_store import VectorStoreManager   # 直接使用 VectorStoreManager，避免循环导入
+from rag_core.vector_store_libsql import VectorStoreManager   # 直接使用 VectorStoreManager，避免循环导入
 
 logger = logging.getLogger("rag.resume_loader")
 
@@ -104,20 +104,20 @@ class ResumeLoader:
 
         if resume:
             self._load_progress()
-            # 从 ChromaDB 同步已存在的 chunk ID
-            self._sync_from_chromadb()
+            # 从 libsql 向量库同步已存在的 chunk ID
+            self._sync_from_vector_store()
             
-            # 优化：如果进度文件存在且 ChromaDB 中已有数据，直接跳过
+            # 优化：如果进度文件存在且向量库中已有数据，直接跳过
             if self.progress_file.exists() and len(self.loaded_ids) > 0:
                 logger.info(f"进度文件存在，已加载 {len(self.loaded_ids)} 个 chunk，跳过重新分块")
-                # 从 ChromaDB 获取已存在的 chunk 数量
-                chromadb_count = self.vs_manager.vectorstore._collection.count()
-                logger.info(f"ChromaDB 中已有 {chromadb_count} 个 chunk")
+                # 从 libsql 向量库获取已存在的 chunk 数量
+                vs_count = self.vs_manager.get_stats().get('total_documents', 0)
+                logger.info(f"向量库中已有 {vs_count} 个 chunk")
                 logger.info(f"进度文件记录: {len(self.loaded_ids)} 个 chunk")
                 
-                # 只有当 ChromaDB 中的 chunk 数量与进度文件一致时，才认为全部已加载
-                if chromadb_count == len(self.loaded_ids):
-                    logger.info(f"ChromaDB 中的 chunk 与进度文件一致，全部已加载，无需继续")
+                # 只有当向量库中的 chunk 数量与进度文件一致时，才认为全部已加载
+                if vs_count == len(self.loaded_ids):
+                    logger.info(f"向量库中的 chunk 与进度文件一致，全部已加载，无需继续")
                     return 0
 
         logger.info("读取小说并分块...")
@@ -197,12 +197,13 @@ class ResumeLoader:
         except Exception as e:
             logger.error(f"读取进度文件失败: {e}")
 
-    def _sync_from_chromadb(self):
-        """从 ChromaDB 同步已存在的 chunk ID，避免重复分块"""
+    def _sync_from_vector_store(self):
+        """从 libsql 向量库同步已存在的 chunk ID，避免重复分块"""
         try:
-            all_docs = self.vs_manager.vectorstore._collection.get(include=['metadatas'])
+            docs = self.vs_manager.list_documents()
             current_file_count = 0
-            for meta in all_docs['metadatas']:
+            for doc in docs:
+                meta = doc.get('metadata', {})
                 # 只同步当前文件的 chunk ID
                 source_file = meta.get('source_file') or meta.get('source', '')
                 if source_file == self.novel_source:
@@ -217,9 +218,9 @@ class ResumeLoader:
                         novel_id = f"novel_{global_order}"
                         if novel_id not in self.loaded_ids:
                             self.loaded_ids.add(novel_id)
-            logger.info(f"从 ChromaDB 同步: loaded_ids={len(self.loaded_ids)}, 当前文件 chunk 数={current_file_count}")
+            logger.info(f"从 libsql 向量库同步: loaded_ids={len(self.loaded_ids)}, 当前文件 chunk 数={current_file_count}")
         except Exception as e:
-            logger.warning(f"从 ChromaDB 同步失败: {e}")
+            logger.warning(f"从 libsql 向量库同步失败: {e}")
 
     def _filter_missing_chunks(self, chunks: List[Document]) -> List[Document]:
         missing = []

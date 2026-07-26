@@ -61,7 +61,7 @@ def get_knowledge_base():
 
 app = Flask(__name__)
 
-DB_PATH = BASE_DIR / 'data' / 'wiki' / 'wiki.db'
+DB_PATH = BASE_DIR / 'storage' / 'knowledge_base.db'
 CHROMA_DB_PATH = BASE_DIR / 'storage' / 'knowledge_base'
 
 
@@ -369,6 +369,10 @@ HTML_TEMPLATE = """
             padding: 20px;
             position: relative;
         }
+        #graph-chart {
+            width: 100%;
+            height: 600px;
+        }
         .graph-controls {
             position: absolute;
             top: 20px;
@@ -467,9 +471,35 @@ HTML_TEMPLATE = """
             from { top: -50px; opacity: 0; }
             to { top: 20px; opacity: 1; }
         }
+
+        .connecting-hint {
+            position: fixed;
+            top: 70px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #e6f7ff;
+            border: 2px solid #1890ff;
+            border-radius: 6px;
+            padding: 8px 20px;
+            z-index: 2000;
+            font-size: 14px;
+            color: #0050b3;
+            display: none;
+        }
+        .connecting-hint .cancel-link {
+            margin-left: 12px;
+            color: #ff4d4f;
+            cursor: pointer;
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
+    <div id="connecting-hint" class="connecting-hint">
+        正在创建关系：已选中 <strong id="connecting-source-name"></strong>，
+        请点击目标节点完成连线
+        <span class="connecting-link" onclick="cancelConnecting()">取消</span>
+    </div>
     <div class="container">
         <header>
             <h1>Wiki 知识图谱管理系统</h1>
@@ -497,73 +527,20 @@ HTML_TEMPLATE = """
 
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
-            <button class="nav-tab active" data-panel="entities">实体管理</button>
-            <button class="nav-tab" data-panel="relations">关系管理</button>
-            <button class="nav-tab" data-panel="graph">知识图谱</button>
+            <button class="nav-tab active" data-panel="graph">知识图谱</button>
             <button class="nav-tab" data-panel="llm">LLM 辅助判断</button>
-            <button class="nav-tab" data-panel="sync">数据同步</button>
             <button class="nav-tab" data-panel="search">知识库搜索</button>
         </div>
 
-        <!-- Entities Panel -->
-        <div id="panel-entities" class="panel">
-            <div class="panel-header">
-                <div class="panel-title">实体列表</div>
-                <div class="search-bar">
-                    <input type="text" id="entity-search" class="search-input" placeholder="搜索实体..." onkeyup="filterEntities()">
-                    <button class="btn btn-primary" onclick="openAddEntityModal()">+ 添加实体</button>
-                </div>
-            </div>
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>名称</th>
-                        <th>类型</th>
-                        <th>属性</th>
-                        <th>来源</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody id="entity-table-body">
-                    <tr><td colspan="6" class="empty-state">加载中...</td></tr>
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Relations Panel -->
-        <div id="panel-relations" class="panel" style="display: none;">
-            <div class="panel-header">
-                <div class="panel-title">关系列表</div>
-                <div class="search-bar">
-                    <input type="text" id="relation-search" class="search-input" placeholder="搜索关系..." onkeyup="filterRelations()">
-                    <button class="btn btn-primary" onclick="openAddRelationModal()">+ 添加关系</button>
-                </div>
-            </div>
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>源实体</th>
-                        <th>关系类型</th>
-                        <th>目标实体</th>
-                        <th>来源</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody id="relation-table-body">
-                    <tr><td colspan="6" class="empty-state">加载中...</td></tr>
-                </tbody>
-            </table>
-        </div>
-
         <!-- Graph Panel -->
-        <div id="panel-graph" class="panel" style="display: none;">
+        <div id="panel-graph" class="panel">
             <div class="panel-header">
                 <div class="panel-title">知识图谱可视化</div>
                 <div class="graph-controls">
-                    <button class="btn btn-primary" onclick="loadGraph()">刷新图谱</button>
-                    <button class="btn btn-secondary" onclick="exportGraph()">导出图片</button>
+                    <button class="btn btn-primary" onclick="openAddEntityModal()">+ 添加实体</button>
+                    <button class="btn btn-primary" onclick="openAddRelationModal()">+ 添加关系</button>
+                    <button class="btn btn-secondary" onclick="loadGraph()">刷新</button>
+                    <button class="btn btn-secondary" onclick="exportGraph()">导出</button>
                 </div>
             </div>
             <div class="graph-container" id="graph-container">
@@ -574,6 +551,17 @@ HTML_TEMPLATE = """
                 <div id="detail-panel" class="detail-panel">
                     <h3>实体详情</h3>
                     <div id="detail-content"></div>
+                    <div class="detail-actions" style="margin-top: 12px;">
+                    <button class="btn btn-primary" onclick="editSelectedEntity()">编辑</button>
+                    <button class="btn btn-danger" onclick="deleteSelectedEntity()">删除</button>
+                    <button class="btn btn-success" onclick="startConnectingFromSelectedEntity()">连线创建关系</button>
+                    </div>
+                    <h4 style="margin-top: 16px;">关联关系</h4>
+                    <div id="related-relations"></div>
+                </div>
+                <div id="detail-empty" class="detail-panel" style="display: block;">
+                    <h3>实体详情</h3>
+                    <p style="color: #999; text-align: center; padding: 40px 0;">点击图谱中的节点查看实体详情</p>
                 </div>
             </div>
         </div>
@@ -595,17 +583,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Sync Panel -->
-        <div id="panel-sync" class="panel" style="display: none;">
-            <div class="panel-header">
-                <div class="panel-title">数据同步</div>
-            </div>
-            <p style="color: #666; margin-bottom: 20px;">将 Wiki 数据同步到 ChromaDB 向量数据库</p>
-            <button class="btn btn-warning" onclick="syncToChromaDB()">开始同步</button>
-            <div id="sync-status" style="margin-top: 20px; padding: 15px; background: #f0f0f0; border-radius: 5px; display: none;">
-                <div id="sync-progress">准备中...</div>
-            </div>
-        </div>
+        <!-- Sync Panel (已在 libsql 统一存储中移除) -->
 
         <!-- Search Panel -->
         <div id="panel-search" class="panel" style="display: none;">
@@ -654,7 +632,7 @@ HTML_TEMPLATE = """
             </div>
             <div class="form-group">
                 <label>实体类型</label>
-                <select id="entity-type">
+                <select id="entity-type" onchange="onEntityTypeChange()">
                     <option value="人物">人物</option>
                     <option value="蛊虫">蛊虫</option>
                     <option value="势力">势力</option>
@@ -662,7 +640,9 @@ HTML_TEMPLATE = """
                     <option value="地点">地点</option>
                     <option value="境界">境界</option>
                     <option value="未分类">未分类</option>
+                    <option value="__custom__">其他... (手动输入)</option>
                 </select>
+                <input type="text" id="entity-type-custom" placeholder="输入自定义分类" style="display:none; margin-top: 6px;">
             </div>
             <div class="form-group">
                 <label>属性（JSON格式）</label>
@@ -685,7 +665,7 @@ HTML_TEMPLATE = """
             <div class="modal-header" id="relation-modal-title">添加关系</div>
             <div class="form-group">
                 <label>源实体</label>
-                <input type="text" id="relation-source" placeholder="输入源实体名称">
+                <select id="relation-source"><option value="">选择源实体</option></select>
             </div>
             <div class="form-group">
                 <label>关系类型</label>
@@ -703,7 +683,7 @@ HTML_TEMPLATE = """
             </div>
             <div class="form-group">
                 <label>目标实体</label>
-                <input type="text" id="relation-target" placeholder="输入目标实体名称">
+                <select id="relation-target"><option value="">选择目标实体</option></select>
             </div>
             <div class="form-group">
                 <label>来源章节</label>
@@ -749,9 +729,13 @@ HTML_TEMPLATE = """
         let editingEntityId = null;
         let editingRelationId = null;
         let graphChart = null;
+        let selectedEntity = null;
+        let connectingSource = null;
+        let connectingSourceName = null;
 
         // ========== 面板切换 ==========
         function showPanel(panelName, evt) {
+            console.log('[showPanel]', panelName);
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
             let activeTab = evt ? evt.currentTarget : document.querySelector(`.nav-tab[data-panel="${panelName}"]`);
             if (activeTab) activeTab.classList.add('active');
@@ -790,6 +774,10 @@ HTML_TEMPLATE = """
             loadStats();
             loadEntities();
             loadRelations();
+            // 等待 entities 和 relations 加载完成后渲染图谱
+            Promise.all([loadEntities(), loadRelations()]).then(function() {
+                loadGraph();
+            });
         });
 
         // ========== 页面关闭提示 ==========
@@ -827,7 +815,6 @@ HTML_TEMPLATE = """
                 const data = await res.json();
 
                 entities = data.entities;
-                renderEntityTable(entities);
                 loadStats();
             } catch (e) {
                 console.error("Fetch Error:", e);
@@ -835,74 +822,67 @@ HTML_TEMPLATE = """
             }
         }
 
-        // 渲染实体表格
-        function renderEntityTable(data) {
-            const tbody = document.getElementById('entity-table-body');
-
-            if (data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无实体</td></tr>';
-                return;
-            }
-
-            tbody.innerHTML = data.map(entity => {
-                let propsDisplay = '-';
-                try {
-                    if (entity.properties) {
-                        const props = typeof entity.properties === 'string' ? JSON.parse(entity.properties) : entity.properties;
-                        if (props && typeof props === 'object') {
-                            propsDisplay = Object.keys(props).join(', ');
-                        }
-                    }
-                } catch (e) {
-                        console.error("JSON Parse Error:", e);
-                    console.error('解析实体属性失败:', e);
-                }
-                return `
-                    <tr>
-                        <td>${entity.id ? entity.id.substring(0, 8) : '-'}</td>
-                        <td style="font-weight: bold;">${escapeHtml(entity.name || '')}</td>
-                        <td><span class="type-badge type-${entity.type || '未分类'}">${entity.type || '未分类'}</span></td>
-                        <td style="color: #666; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(propsDisplay)}</td>
-                        <td>${entity.source_chapter || '-'}</td>
-                        <td>
-                            <div class="action-buttons">
-                                <button class="btn btn-secondary" onclick="openEditEntityModal('${entity.id || ''}')">编辑</button>
-                                <button class="btn btn-danger" onclick="deleteEntity('${entity.id || ''}')">删除</button>
-                                <button class="btn btn-success" onclick="approveEntity('${entity.id || ''}')">批准</button>
-                            </div>
-                        </td>
-                    </tr>
-                `;
-            }).join('');
-        }
-
-        // 过滤实体
-        function filterEntities() {
-            const search = document.getElementById('entity-search').value.toLowerCase();
-            const filtered = entities.filter(e => {
-                const nameMatch = (e.name || '').toLowerCase().includes(search);
-                let propsMatch = false;
-                try {
-                    if (e.properties) {
-                        const props = typeof e.properties === 'string' ? JSON.parse(e.properties) : e.properties;
-                        if (props && typeof props === 'object') {
-                            propsMatch = Object.values(props).some(v => v.toString().toLowerCase().includes(search));
-                        }
-                    }
-                } catch (err) {
-                    console.error('解析实体属性失败:', err);
-                }
-                return nameMatch || propsMatch;
-            });
-            renderEntityTable(filtered);
-        }
+        // 渲染实体表格（已移至图谱面板）
+        function renderEntityTable() { /* moved to graph */ }
 
         // 实体模态框操作
+        var CUSTOM_TYPES_KEY = 'wiki_custom_entity_types';
+        var PRESET_TYPES = ['人物', '蛊虫', '势力', '流派', '地点', '境界', '未分类'];
+
+        function getCustomTypes() {
+            try {
+                var saved = localStorage.getItem(CUSTOM_TYPES_KEY);
+                return saved ? JSON.parse(saved) : [];
+            } catch(e) { return []; }
+        }
+
+        function saveCustomType(name) {
+            var types = getCustomTypes();
+            if (types.indexOf(name) < 0 && PRESET_TYPES.indexOf(name) < 0 && name !== '__custom__') {
+                types.push(name);
+                localStorage.setItem(CUSTOM_TYPES_KEY, JSON.stringify(types));
+            }
+        }
+
+        function rebuildTypeSelect(selectedValue) {
+            var select = document.getElementById('entity-type');
+            var html = '';
+            PRESET_TYPES.forEach(function(t) {
+                html += '<option value="' + escapeHtml(t) + '"' + (t === selectedValue ? ' selected' : '') + '>' + escapeHtml(t) + '</option>';
+            });
+            var customTypes = getCustomTypes();
+            customTypes.forEach(function(t) {
+                html += '<option value="' + escapeHtml(t) + '"' + (t === selectedValue ? ' selected' : '') + '>' + escapeHtml(t) + '</option>';
+            });
+            html += '<option value="__custom__">其他... (手动输入)</option>';
+            select.innerHTML = html;
+        }
+
+        function getEffectiveEntityType() {
+            var select = document.getElementById('entity-type');
+            if (select.value === '__custom__') {
+                return document.getElementById('entity-type-custom').value.trim() || '未分类';
+            }
+            return select.value;
+        }
+
+        function onEntityTypeChange() {
+            var select = document.getElementById('entity-type');
+            var custom = document.getElementById('entity-type-custom');
+            if (select.value === '__custom__') {
+                custom.style.display = 'block';
+            } else {
+                custom.style.display = 'none';
+            }
+        }
+
         function openAddEntityModal() {
             editingEntityId = null;
             document.getElementById('entity-modal-title').textContent = '添加实体';
             document.getElementById('entity-name').value = '';
-            document.getElementById('entity-type').value = '未分类';
+            rebuildTypeSelect('未分类');
+            document.getElementById('entity-type-custom').style.display = 'none';
+            document.getElementById('entity-type-custom').value = '';
             document.getElementById('entity-properties').value = '{}';
             document.getElementById('entity-source').value = '';
             document.getElementById('entity-modal').style.display = 'block';
@@ -915,7 +895,18 @@ HTML_TEMPLATE = """
             editingEntityId = id;
             document.getElementById('entity-modal-title').textContent = '编辑实体';
             document.getElementById('entity-name').value = entity.name || '';
-            document.getElementById('entity-type').value = entity.type || '未分类';
+            var entityType = entity.type || '未分类';
+            var isPreset = PRESET_TYPES.indexOf(entityType) >= 0;
+            var isCustom = getCustomTypes().indexOf(entityType) >= 0;
+            if (isPreset || isCustom) {
+                rebuildTypeSelect(entityType);
+                document.getElementById('entity-type-custom').style.display = 'none';
+                document.getElementById('entity-type-custom').value = '';
+            } else {
+                rebuildTypeSelect('__custom__');
+                document.getElementById('entity-type-custom').style.display = 'block';
+                document.getElementById('entity-type-custom').value = entityType === '未分类' ? '' : entityType;
+            }
             document.getElementById('entity-properties').value = entity.properties ? JSON.stringify(JSON.parse(entity.properties), null, 2) : '{}';
             document.getElementById('entity-source').value = entity.source_chapter || '';
             document.getElementById('entity-modal').style.display = 'block';
@@ -928,7 +919,7 @@ HTML_TEMPLATE = """
         // 保存实体
         async function saveEntity() {
             const name = document.getElementById('entity-name').value.trim();
-            const type = document.getElementById('entity-type').value;
+            const type = getEffectiveEntityType();
             const propertiesStr = document.getElementById('entity-properties').value;
             const source = document.getElementById('entity-source').value;
 
@@ -946,6 +937,7 @@ HTML_TEMPLATE = """
                 });
                 const data = await res.json();
                 if (data.success) {
+                    saveCustomType(type);
                     showToast('保存成功', 'success');
                     closeEntityModal();
                     loadEntities();
@@ -1002,7 +994,6 @@ HTML_TEMPLATE = """
                 const data = await res.json();
 
                 relations = data.relations;
-                renderRelationTable(relations);
                 loadStats();
             } catch (e) {
                 console.error("Fetch Error:", e);
@@ -1010,51 +1001,26 @@ HTML_TEMPLATE = """
             }
         }
 
-        // 渲染关系表格
-        function renderRelationTable(data) {
-            const tbody = document.getElementById('relation-table-body');
-
-            if (data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无关系</td></tr>';
-                return;
-            }
-
-            tbody.innerHTML = data.map(rel => `
-                <tr>
-                    <td>${rel.id}</td>
-                    <td style="font-weight: bold;">${escapeHtml(rel.source_name || '未知')}</td>
-                    <td><span class="type-badge type-流派" style="background: #e6f7ff;">${rel.rel_type}</span></td>
-                    <td style="font-weight: bold;">${escapeHtml(rel.target_name || '未知')}</td>
-                    <td>${rel.source_chapter || '-'}</td>
-                    <td>
-                        <div class="action-buttons">
-                            <button class="btn btn-secondary" onclick="showEntityContext('${escapeHtml(rel.source_name || '')}', 'source')">查看上下文</button>
-                            <button class="btn btn-danger" onclick="deleteRelation(${rel.id})">删除</button>
-                            <button class="btn btn-success" onclick="approveRelation(${rel.id})">批准</button>
-                        </div>
-                    </td>
-                </tr>
-            `).join('');
-        }
-
-        // 过滤关系
-        function filterRelations() {
-            const search = document.getElementById('relation-search').value.toLowerCase();
-            const filtered = relations.filter(r =>
-                (r.source_name || '').toLowerCase().includes(search) ||
-                (r.target_name || '').toLowerCase().includes(search) ||
-                r.rel_type.toLowerCase().includes(search)
-            );
-            renderRelationTable(filtered);
-        }
+        // 渲染关系表格（已移至图谱面板）
+        function renderRelationTable() { /* moved to graph */ }
 
         // 关系模态框操作
         function openAddRelationModal() {
             editingRelationId = null;
             document.getElementById('relation-modal-title').textContent = '添加关系';
-            document.getElementById('relation-source').value = '';
-            document.getElementById('relation-type').value = '持有';
-            document.getElementById('relation-target').value = '';
+            var sourceSelect = document.getElementById('relation-source');
+            sourceSelect.innerHTML = '<option value="">选择源实体</option>';
+            entities.forEach(function(e) {
+                var name = e.name || '(未命名实体)';
+                sourceSelect.innerHTML += '<option value="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>';
+            });
+        document.getElementById('relation-type').value = '持有';
+            var targetSelect = document.getElementById('relation-target');
+            targetSelect.innerHTML = '<option value="">选择目标实体</option>';
+            entities.forEach(function(e) {
+                var name = e.name || '(未命名实体)';
+                targetSelect.innerHTML += '<option value="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>';
+            });
             document.getElementById('relation-source-chapter').value = '';
             document.getElementById('relation-modal').style.display = 'block';
         }
@@ -1070,29 +1036,38 @@ HTML_TEMPLATE = """
             const target = document.getElementById('relation-target').value.trim();
             const sourceChapter = document.getElementById('relation-source-chapter').value;
 
-            if (!source || !target) {
-                showToast('请输入源实体和目标实体', 'error');
+            // 防御 null 字符串
+            var safeSource = (source === 'null' || source === 'undefined') ? '' : source;
+            var safeTarget = (target === 'null' || target === 'undefined') ? '' : target;
+
+            if (!safeSource || !safeTarget) {
+                showToast('请选择源实体和目标实体', 'error');
                 return;
             }
 
             try {
+                const postBody = JSON.stringify({source_name: safeSource, rel_type: type, target_name: safeTarget, source_chapter: sourceChapter});
+
                 const res = await fetch('/api/relations', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({source_name: source, rel_type: type, target_name: target, source_chapter: sourceChapter})
+                    cache: 'no-store',
+                    body: postBody
                 });
                 const data = await res.json();
+
                 if (data.success) {
                     showToast('保存成功', 'success');
                     closeRelationModal();
-                    loadRelations();
+                    cancelConnecting();
+                    await loadRelations();
                     loadStats();
                     loadGraph();
                 } else {
                     showToast('保存失败: ' + data.error, 'error');
                 }
             } catch (e) {
-                console.error("Fetch Error:", e);
+                console.error('Fetch Error:', e);
                 showToast('保存失败: ' + e.message, 'error');
             }
         }
@@ -1181,30 +1156,155 @@ if (data.relations.length === 0) {
             document.getElementById('context-modal').style.display = 'none';
         }
 
-        // 数据同步
-        async function syncToChromaDB() {
-            const statusDiv = document.getElementById('sync-status');
-            const progressDiv = document.getElementById('sync-progress');
-            statusDiv.style.display = 'block';
-            progressDiv.innerHTML = '<span class="loading"></span> 开始同步...';
+        // ========== 图谱详情面板 ==========
+        function showEntityDetail(entityObj) {
+            selectedEntity = entityObj;
+            document.getElementById('detail-panel').style.display = 'block';
+            document.getElementById('detail-empty').style.display = 'none';
+            var html = '<table class="data-table"><tr><th>属性</th><th>值</th></tr>';
+            html += '<tr><td>名称</td><td>' + (entityObj.name || '') + '</td></tr>';
+            html += '<tr><td>类型</td><td>' + (entityObj.type || '未分类') + '</td></tr>';
+            html += '<tr><td>来源</td><td>' + (entityObj.source_chapter || '') + '</td></tr>';
+            if (entityObj.properties) {
+                try {
+                    var props = typeof entityObj.properties === 'string' ? JSON.parse(entityObj.properties) : entityObj.properties;
+                    if (props && typeof props === 'object') {
+                        Object.keys(props).forEach(function(k) {
+                            html += '<tr><td>' + k + '</td><td>' + props[k] + '</td></tr>';
+                        });
+                    }
+                } catch(e) {}
+            }
+            html += '</table>';
+            document.getElementById('detail-content').innerHTML = html;
+            var rels = getEntityRelations(entityObj.id);
+            var relHtml = '';
+            if (rels.length === 0) {
+                relHtml = '<p style="color:#999">暂无关系</p>';
+            } else {
+                rels.forEach(function(r) {
+                    relHtml += '<div style="padding:8px;border-bottom:1px solid #eee;">';
+                    relHtml += (r.source_name || r.source_id) + ' -> <strong>' + (r.rel_type || '') + '</strong> -> ' + (r.target_name || r.target_id);
+                    relHtml += ' <button class="btn btn-danger" style="padding:2px 8px;font-size:12px" onclick="deleteRelationById(' + r.id + ')">删除</button>';
+                    relHtml += '</div>';
+                });
+            }
+            document.getElementById('related-relations').innerHTML = relHtml;
+        }
 
+        function getEntityRelations(entityId) {
+            return relations.filter(function(r) {
+                return r.source_id === entityId || r.target_id === entityId;
+            });
+        }
+
+        async function deleteRelationById(relId) {
+            if (!confirm('确定删除此关系？')) return;
             try {
-                const res = await fetch('/api/sync', { method: 'POST' });
-                const data = await res.json();
+                var res = await fetch('/api/relations/' + relId, { method: 'DELETE' });
+                var data = await res.json();
                 if (data.success) {
-                    progressDiv.innerHTML = `
-                        <div style="color: #52c41a; font-weight: bold;">同步完成！</div>
-                        <div style="color: #666; margin-top: 5px;">已同步实体: ${data.entities_synced}</div>
-                        <div style="color: #666;">已同步关系: ${data.relations_synced}</div>
-                    `;
+                    showToast('关系已删除', 'success');
+                    await loadRelations();
+                    loadGraph();
+                    if (selectedEntity) showEntityDetail(selectedEntity);
                 } else {
-                    progressDiv.innerHTML = `<div style="color: #ff4d4f;">同步失败: ${data.error}</div>`;
+                    showToast('删除失败: ' + (data.error || '未知错误'), 'error');
                 }
-            } catch (e) {
-                console.error("Fetch Error:", e);
-                progressDiv.innerHTML = `<div style="color: #ff4d4f;">同步失败: ${e.message}</div>`;
+            } catch(e) {
+                showToast('删除失败: ' + e.message, 'error');
             }
         }
+
+        function editSelectedEntity() {
+            if (!selectedEntity) return;
+            openEditEntityModal(selectedEntity.id);
+        }
+
+        function startConnectingFromSelectedEntity() {
+            if (!selectedEntity) return;
+            startConnectingFromEntity(selectedEntity);
+        }
+
+        function cancelConnecting() {
+            connectingSource = null;
+            connectingSourceName = null;
+            document.getElementById('connecting-hint').style.display = 'none';
+            graphChart.dispatchAction({ type: 'unselect', seriesIndex: 0 });
+            graphChart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+        }
+
+        function startConnectingFromEntity(entityObj) {
+            connectingSource = entityObj.id;
+            connectingSourceName = entityObj.name;
+            document.getElementById('connecting-source-name').textContent = entityObj.name;
+            document.getElementById('connecting-hint').style.display = 'block';
+        }
+
+        function completeConnection(targetEntity) {
+            if (!connectingSource) return;
+            var srcName = connectingSourceName;
+            var tgtName = targetEntity.name;
+            cancelConnecting();
+            var srcId = connectingSource;
+            var tgtId = targetEntity.id;
+            // 直接打开弹窗并预填
+            editingRelationId = null;
+            document.getElementById('relation-modal-title').textContent = '创建关系';
+            var srcSelect = document.getElementById('relation-source');
+            srcSelect.innerHTML = '<option value="' + escapeHtml(srcName) + '" selected>' + escapeHtml(srcName) + '</option>';
+            srcSelect.disabled = true;
+            var tgtSelect = document.getElementById('relation-target');
+            tgtSelect.innerHTML = '<option value="' + escapeHtml(tgtName) + '" selected>' + escapeHtml(tgtName) + '</option>';
+            tgtSelect.disabled = true;
+            document.getElementById('relation-type').value = '持有';
+            document.getElementById('relation-source-chapter').value = '';
+            document.getElementById('relation-modal').style.display = 'block';
+        }
+
+        async function openAddRelationModalForConnecting(srcId, srcName, tgtId, tgtName) {
+            editingRelationId = null;
+            document.getElementById('relation-modal-title').textContent = '创建关系';
+
+            var srcSelect = document.getElementById('relation-source');
+            srcSelect.innerHTML = '<option value="' + srcName + '" selected>' + srcName + '</option>';
+            srcSelect.disabled = true;
+
+            var tgtSelect = document.getElementById('relation-target');
+            tgtSelect.innerHTML = '<option value="' + tgtName + '" selected>' + tgtName + '</option>';
+            tgtSelect.disabled = true;
+
+            document.getElementById('relation-type').value = '';
+            document.getElementById('relation-source-chapter').value = '';
+
+            document.getElementById('relation-modal').style.display = 'block';
+        }
+
+        async function deleteSelectedEntity() {
+            if (!selectedEntity) return;
+            if (!confirm('确定删除实体 "' + selectedEntity.name + '"?')) return;
+            try {
+                var res = await fetch('/api/entities/' + selectedEntity.id, { method: 'DELETE' });
+                var data = await res.json();
+                if (data.success) {
+                    showToast('实体已删除', 'success');
+                    selectedEntity = null;
+                    document.getElementById('detail-panel').style.display = 'none';
+                    document.getElementById('detail-empty').style.display = 'block';
+                    await loadEntities();
+                    await loadRelations();
+                    loadGraph();
+                    loadStats();
+                } else {
+                    showToast('删除失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch(e) {
+                showToast('删除失败: ' + e.message, 'error');
+            }
+        }
+
+        // 数据同步
+        // syncToChromaDB 已在 libsql 统一存储中移除（无需同步）
 
         // ==================== 知识库语义搜索 ====================
         let searchCache = null;
@@ -1304,13 +1404,13 @@ if (data.relations.length === 0) {
 
         // 知识图谱可视化
         function loadGraph() {
+            console.log('[graph] loadGraph called, entities=', entities.length, ' relations=', relations.length);
             const container = document.getElementById('graph-chart');
+            if (!container) { console.error('[graph] container #graph-chart not found'); return; }
 
             if (graphChart) {
                 graphChart.dispose();
             }
-
-            graphChart = echarts.init(container);
 
             // 准备数据
             const typeSet = [...new Set(entities.map(e => e.type || '未分类'))];
@@ -1323,7 +1423,7 @@ if (data.relations.length === 0) {
                 category: typeMap[e.type || '未分类'] || 0,
                 symbolSize: Math.max(30, Math.min(80, 25 + (e.name || '').length * 6)),
                 itemStyle: {
-                    color: `hsl(${(typeMap[e.type || '未分类'] || 0) * 137.508 % 360}, 70%, 60%)`
+                    color: 'hsl(' + ((typeMap[e.type || '未分类'] || 0) * 137.508 % 360) + ', 70%, 60%)'
                 },
                 _raw: e
             }));
@@ -1335,66 +1435,94 @@ if (data.relations.length === 0) {
                 lineStyle: { width: 2, curveness: 0.3 }
             }));
 
-            const option = {
-                title: {
-                    text: 'Wiki 知识图谱',
-                    left: 'center'
-                },
-                tooltip: {
-                    formatter: function(params) {
-                        if (params.dataType === 'node') {
-                            const e = params.data._raw;
-                            let html = `<strong>${escapeHtml(e.name || '未知')}</strong><br/>`;
-                            html += `类型: ${escapeHtml(e.type || '未分类')}<br/>`;
-                            if (e.properties) {
-                                try {
-                                    let props = typeof e.properties === 'string' ? JSON.parse(e.properties) : e.properties;
-                                    if (props && typeof props === 'object') {
-                                        Object.entries(props).forEach(([k, v]) => {
-                                            html += `${escapeHtml(k)}: ${escapeHtml(String(v))}<br/>`;
-                                        });
-                                    } else {
-                                        html += `属性: ${escapeHtml(String(e.properties))}<br/>`;
+            console.log('[graph] nodes:', nodes.length, 'links:', links.length);
+            console.log('[graph] container size:', container.offsetWidth, 'x', container.offsetHeight);
+
+            // 延迟初始化——等待面板 display:block 后浏览器 reflow
+            setTimeout(function() {
+                console.log('[graph] container size after timeout:', container.offsetWidth, 'x', container.offsetHeight);
+                graphChart = echarts.init(container);
+
+                const option = {
+                    title: {
+                        text: 'Wiki 知识图谱',
+                        left: 'center'
+                    },
+                    tooltip: {
+                        formatter: function(params) {
+                            if (params.dataType === 'node') {
+                                const e = params.data._raw;
+                                var html = '<strong>' + escapeHtml(e.name || '未知') + '</strong><br/>';
+                                html += '类型: ' + escapeHtml(e.type || '未分类') + '<br/>';
+                                if (e.properties) {
+                                    try {
+                                        var props = typeof e.properties === 'string' ? JSON.parse(e.properties) : e.properties;
+                                        if (props && typeof props === 'object') {
+                                            Object.keys(props).forEach(function(k) {
+                                                html += escapeHtml(k) + ': ' + escapeHtml(String(props[k])) + '<br/>';
+                                            });
+                                        } else {
+                                            html += '属性: ' + escapeHtml(String(e.properties)) + '<br/>';
+                                        }
+                                    } catch (err) {
+                                        html += '属性: ' + escapeHtml(String(e.properties)) + '<br/>';
                                     }
-                                } catch (err) {
-                                    html += `属性: ${escapeHtml(String(e.properties))}<br/>`;
                                 }
+                                return html;
+                            } else {
+                                return escapeHtml(params.data.source || '未知') + ' - ' + escapeHtml(params.data.name || '未知') + ' - ' + escapeHtml(params.data.target || '未知');
                             }
-                            return html;
+                        }
+                    },
+                    legend: [{
+                        data: typeSet,
+                        orient: 'horizontal',
+                        top: 30
+                    }],
+                    series: [{
+                        type: 'graph',
+                        layout: 'force',
+                        data: nodes,
+                        links: links,
+                        categories: typeSet.map(function(t){ return { name: t }; }),
+                        roam: true,
+                        label: { show: true, position: 'right' },
+                        force: {
+                            repulsion: 300,
+                            edgeLength: 120
+                        },
+                        lineStyle: {
+                            color: 'source',
+                            curveness: 0.3
+                        },
+                        emphasis: {
+                            focus: 'adjacency',
+                            lineStyle: { width: 4 }
+                        }
+                    }]
+                };
+
+                graphChart.setOption(option);
+                console.log('[graph] setOption done');
+
+                graphChart.off('click');
+                graphChart.on('click', function(params) {
+                    if (params.dataType === 'node' && params.data._raw) {
+                        if (connectingSource !== null) {
+                            if (params.data._raw.id === connectingSource) {
+                                showToast('不能连接自身', 'error');
+                                return;
+                            }
+                            completeConnection(params.data._raw);
                         } else {
-                            return `${escapeHtml(params.data.source || '未知')} - ${escapeHtml(params.data.name || '未知')} - ${escapeHtml(params.data.target || '未知')}`;
+                            showEntityDetail(params.data._raw);
                         }
                     }
-                },
-                legend: [{
-                    data: typeSet,
-                    orient: 'horizontal',
-                    top: 30
-                }],
-                series: [{
-                    type: 'graph',
-                    layout: 'force',
-                    data: nodes,
-                    links: links,
-                    categories: typeSet.map(t => ({ name: t })),
-                    roam: true,
-                    label: { show: true, position: 'right' },
-                    force: {
-                        repulsion: 300,
-                        edgeLength: 120
-                    },
-                    lineStyle: {
-                        color: 'source',
-                        curveness: 0.3
-                    },
-                    emphasis: {
-                        focus: 'adjacency',
-                        lineStyle: { width: 4 }
-                    }
-                }]
-            };
+                });
 
-            graphChart.setOption(option);
+                document.getElementById('graph-entity-count').textContent = entities.length;
+                document.getElementById('graph-relation-count').textContent = relations.length;
+            }, 100);
         }
 
         // 导出图谱
@@ -1795,8 +1923,11 @@ def get_relations():
     conn = get_db_connection()
     try:
         cursor = conn.execute('''
-            SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter
+            SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
+                   src.name as source_name, tgt.name as target_name
             FROM relationships r
+            LEFT JOIN entities src ON r.source_id = src.id
+            LEFT JOIN entities tgt ON r.target_id = tgt.id
             ORDER BY r.id DESC
             LIMIT 100
         ''')
@@ -1834,7 +1965,8 @@ def add_relation():
 
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"success": False, "error": "操作失败，请查看日志"}), 500
+        logger.error(f"add_relation 失败: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/api/entities/batch-delete', methods=['POST'])
@@ -2010,83 +2142,6 @@ def import_entities():
     except Exception as e:
         return jsonify({"success": False, "error": "操作失败，请查看日志"}), 500
 
-
-@app.route('/api/sync', methods=['POST'])
-def sync_to_chroma():
-    """同步 Wiki 数据到 ChromaDB"""
-    try:
-        db_path = DB_PATH
-        chroma_path = CHROMA_DB_PATH
-
-        wiki_db = WikiDB(str(db_path))
-        wiki_db.init_db()
-
-        kb = get_knowledge_base()
-        kb.vectorstore = kb._EmbeddingWrapper(kb.embeddings)
-
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute('SELECT id, name, type, properties, status FROM entities')
-        entities = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute('''
-            SELECT r.id, e1.name as source_name, e2.name as target_name, r.rel_type, r.status
-            FROM relationships r
-            JOIN entities e1 ON r.source_id=e1.id
-            JOIN entities e2 ON r.target_id=e2.id
-        ''')
-        relations = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-
-        entities_synced = 0
-        for entity in entities:
-            try:
-                content = f"{entity['name']} ({entity['type']})\n"
-                if entity['properties']:
-                    content += f"属性: {json.dumps(entity['properties'], ensure_ascii=False)}"
-
-                kb.add_document(
-                    filepath=db_path.parent / f"wiki_entity_{entity['id']}.txt",
-                    content=content,
-                    metadata={
-                        'type': 'wiki_entity',
-                        'entity_name': entity['name'],
-                        'entity_type': entity['type']
-                    }
-                )
-                entities_synced += 1
-            except Exception as e:
-                print(f"同步实体失败 {entity['name']}: {e}")
-
-        relations_synced = 0
-        for rel in relations:
-            try:
-                content = f"{rel['source_name']} -{rel['rel_type']}-> {rel['target_name']}"
-
-                kb.add_document(
-                    filepath=db_path.parent / f"wiki_relation_{rel['id']}.txt",
-                    content=content,
-                    metadata={
-                        'type': 'wiki_relation',
-                        'source': rel['source_name'],
-                        'target': rel['target_name'],
-                        'relation_type': rel['rel_type']
-                    }
-                )
-                relations_synced += 1
-            except Exception as e:
-                print(f"同步关系失败 {rel['source_name']} -{rel['rel_type']}-> {rel['target_name']}: {e}")
-
-        return jsonify({
-            "success": True,
-            "entities_synced": entities_synced,
-            "relations_synced": relations_synced
-        })
-    except Exception as e:
-        print(f"同步失败: {e}")
 
 @app.route('/api/llm/review-relations', methods=['GET', 'POST'])
 def llm_review_relations():

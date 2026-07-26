@@ -586,7 +586,7 @@ def run_server():
     logger.info("预加载 Embedding 模型...")
     try:
         kb = get_kb()
-        from rag_core.vector_store import VectorStoreManager
+        from rag_core.vector_store_libsql import VectorStoreManager
         vs = VectorStoreManager()
         vs.search("preload", top_k=1)
         logger.info("✅ Embedding 模型预加载完成")

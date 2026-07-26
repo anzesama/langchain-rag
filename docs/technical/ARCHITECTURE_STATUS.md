@@ -1,11 +1,36 @@
 # 知识库架构状态报告
 
-**时间**: 2026-07-03  
-**状态**: ✅ 架构升级完成
+**时间**: 2026-07-26  
+**状态**: ✅ libsql 统一存储 + LSH 优先检索 + 因果排序 + 断点续传
 
 ---
 
 ## 📊 当前架构
+
+### 存储层（libsql 统一存储）
+
+```
+┌──────────────────────────────────────────────┐
+│              存储架构                         │
+├──────────────────────────────────────────────┤
+│  libsql (storage/knowledge_base.db)          │
+│  ├── chunks 表 — 向量数据（chunk_id, vector, metadata）
+│  ├── entities 表 — Wiki 实体                 │
+│  ├── relationships 表 — Wiki 关系            │
+│  ├── entity_history 表 — 历史版本            │
+│  ├── facts 表 — 事实锚点                    │
+│  ├── pending_reviews 表 — 待审核            │
+│  └── correction_log 表 — 修正日志           │
+├──────────────────────────────────────────────┤
+│  FAISS LSH 索引 (storage/lsh_index/)         │
+│  └── index.faiss + id_map.pkl               │
+├──────────────────────────────────────────────┤
+│  ChromaDB (storage/knowledge_base/)          │
+│  └── 回退存储（LSH 召回不足时使用）           │
+└──────────────────────────────────────────────┘
+```
+
+### 检索流程
 
 ```
 用户查询
@@ -40,13 +65,24 @@ LLM 生成回答
 
 | 模块 | 文件 | 状态 | 说明 |
 |------|------|------|------|
+| **libsql 向量存储** | `vector_store_libsql.py` | ✅ 完成 | libsql 向量存储（主存储） |
+| **ChromaDB 向量存储** | `vector_store.py` | ✅ 完成 | ChromaDB 向量存储（回退） |
+| **Wiki 数据库 (libsql)** | `wiki_db_libsql.py` | ✅ 完成 | libsql Wiki 数据库 |
+| **Wiki 数据库 (兼容)** | `wiki_db.py` | ✅ 完成 | 重导出 libsql 版本 |
 | **LSH 索引管理器** | `lsh_index.py` | ✅ 完成 | FAISS LSH，int8 量化，保存/加载 |
 | **因果排序器** | `causal_sorter.py` | ✅ 完成 | 按 global_order 排序，上下文窗口 |
 | **断点续传加载器** | `resume_loader.py` | ✅ 完成 | per-file 进度，全局计数器 |
-| **知识库主类** | `knowledge_base.py` | ✅ 重写 | 集成 LSH + 断点续传 + 同步双写 |
+| **知识库主类** | `knowledge_base.py` | ✅ 重写 | 集成 libsql + LSH + 断点续传 + 同步双写 |
 | **RAG 管道** | `rag_pipeline.py` | ✅ 重写 | LSH 优先 + HNSW 回退 + 因果排序 |
+| **混合检索路由** | `hybrid_router.py` | ✅ 完成 | 自动路由普通/父子模式 |
+| **父子索引构建** | `parent_index_builder.py` | ✅ 完成 | 后台异步构建父子索引 |
 | **CLI 工具** | `rag_cli.py` | ✅ 更新 | novel 子命令 + rebuild 参数 |
-| **配置** | `rag_config.py` | ✅ 更新 | LSH 路径、召回阈值、架构开关 |
+| **Wiki CLI** | `wiki_cli.py` | ✅ 完成 | Wiki 管理 CLI |
+| **配置** | `rag_config.py` | ✅ 更新 | libsql 路径、LSH 路径、召回阈值、架构开关 |
+| **迁移脚本** | `migrate_to_libsql.py` | ✅ 完成 | 从 ChromaDB/SQLite 迁移到 libsql |
+| **备份脚本** | `backup_before_migration.py` | ✅ 完成 | 迁移前完整备份 |
+| **回滚脚本** | `rollback_libsql.py` | ✅ 完成 | 快速回滚到迁移前状态 |
+| **验证脚本** | `verify_migration.py` | ✅ 完成 | 迁移后数据完整性验证 |
 
 ---
 
@@ -57,11 +93,12 @@ LLM 生成回答
 - 其他文档 — 通过 auto-import 自动索引
 
 **存储文件**:
-- `storage/novel_lsh.index` — FAISS LSH 索引
-- `storage/id_map.pkl` — ID 映射文件
+- `storage/knowledge_base.db` — libsql 统一数据库（向量 + Wiki）
+- `storage/lsh_index/index.faiss` — FAISS LSH 索引
+- `storage/lsh_index/id_map.pkl` — ID 映射文件
 - `storage/progress_*.json` — per-file 进度文件
 - `storage/global_counter.json` — 全局计数器
-- `storage/knowledge_base/` — ChromaDB 存储
+- `storage/knowledge_base/` — ChromaDB 存储（兼容/回退）
 
 ---
 
@@ -69,14 +106,21 @@ LLM 生成回答
 
 | 验收项 | 状态 |
 |--------|------|
+| libsql 向量存储实现 | ✅ 通过 |
+| libsql Wiki 数据库实现 | ✅ 通过 |
 | LSH 索引管理器实现 | ✅ 通过 |
 | 因果排序器实现 | ✅ 通过 |
 | 断点续传加载器实现 | ✅ 通过 |
 | KnowledgeBase 重写 | ✅ 通过 |
 | RagPipeline 重写 | ✅ 通过 |
+| 混合检索路由 | ✅ 通过 |
+| 父子索引构建 | ✅ 通过 |
 | CLI 命令更新 | ✅ 通过 |
+| Wiki CLI 命令 | ✅ 通过 |
 | 配置更新 | ✅ 通过 |
-| 模块导出更新 | ✅ 通过 |
+| 迁移脚本 | ✅ 通过 |
+| 备份/回滚脚本 | ✅ 通过 |
+| 文档更新 | ✅ 通过 |
 | 测试验证 | ✅ 通过 |
 
 ---

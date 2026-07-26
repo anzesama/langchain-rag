@@ -22,6 +22,8 @@ class LLMExtractor:
         self.api_base = AGNES_API_BASE
         self.model = LLM_MODEL
         self.max_tokens = LLM_MAX_TOKENS
+        self.max_retries = 3
+        self.retry_delay = 5  # 秒, 429 限流时等待
         from rag_core.wiki_db_libsql import get_wiki_db
         self.wiki_db = get_wiki_db()
 
@@ -99,59 +101,85 @@ class LLMExtractor:
 {text}
 """
 
-        try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
+        # 重试机制
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                headers = {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                }
 
-            payload = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": "你是一个专业的知识图谱实体提取专家，只返回JSON格式结果，不要包含任何解释文字。"},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.1,
-                "max_tokens": self.max_tokens
-            }
+                payload = {
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": "你是一个专业的知识图谱实体提取专家，只返回JSON格式结果，不要包含任何解释文字。"},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": self.max_tokens
+                }
 
-            response = requests.post(
-                f"{self.api_base}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=60
-            )
+                response = requests.post(
+                    f"{self.api_base}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=60
+                )
 
-            if response.status_code != 200:
-                logger.warning(f"Agnes API error: {response.status_code} {response.text}")
+                if response.status_code == 429:
+                    # 限流，等待后重试
+                    wait_time = self.retry_delay * (attempt + 1)
+                    logger.warning(f"Agnes API 429 rate limit, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries})")
+                    import time
+                    time.sleep(wait_time)
+                    continue
+
+                if response.status_code != 200:
+                    logger.warning(f"Agnes API error: {response.status_code} {response.text}")
+                    return {'entities': [], 'relations': []}
+
+                data = response.json()
+                content = data["choices"][0]["message"]["content"].strip()
+
+                # 移除可能的markdown代码块标记
+                if content.startswith("```json"):
+                    content = content[7:]
+                if content.startswith("```"):
+                    content = content[3:]
+                if content.endswith("```"):
+                    content = content[:-3]
+
+                result = json.loads(content)
+                return result
+
+            except requests.exceptions.Timeout:
+                last_error = "timeout"
+                if attempt < self.max_retries - 1:
+                    continue
+                logger.warning("Agnes API request timeout")
+                return {'entities': [], 'relations': []}
+            except requests.exceptions.RequestException as e:
+                last_error = str(e)
+                if attempt < self.max_retries - 1:
+                    continue
+                logger.warning(f"Agnes API request failed: {e}")
+                return {'entities': [], 'relations': []}
+            except json.JSONDecodeError as e:
+                last_error = f"JSON parse: {e}"
+                if attempt < self.max_retries - 1:
+                    continue
+                logger.warning(f"JSON parse error from Agnes: {e}")
+                return {'entities': [], 'relations': []}
+            except Exception as e:
+                last_error = str(e)
+                if attempt < self.max_retries - 1:
+                    continue
+                logger.warning(f"Unexpected error in _llm_extract: {e}")
                 return {'entities': [], 'relations': []}
 
-            data = response.json()
-            content = data["choices"][0]["message"]["content"].strip()
-
-            # 移除可能的markdown代码块标记
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-
-            result = json.loads(content)
-            return result
-
-        except requests.exceptions.Timeout:
-            logger.warning("Agnes API request timeout")
-            return {'entities': [], 'relations': []}
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Agnes API request failed: {e}")
-            return {'entities': [], 'relations': []}
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON parse error from Agnes: {e}")
-            return {'entities': [], 'relations': []}
-        except Exception as e:
-            logger.warning(f"Unexpected error in _llm_extract: {e}")
-            return {'entities': [], 'relations': []}
+        logger.warning(f"Agnes API failed after {self.max_retries} retries: {last_error}")
+        return {'entities': [], 'relations': []}
 
     def _regex_extract(self, text: str) -> Dict[str, Any]:
         """
@@ -274,7 +302,7 @@ class LLMExtractor:
                 return {'entities': [], 'relations': []}
 
             # TF-IDF 提取关键词
-            vectorizer = TfidfVectorizer(max_features=100, stop_words='cn')
+            vectorizer = TfidfVectorizer(max_features=100, stop_words=None)
             tfidf_matrix = vectorizer.fit_transform(sentences)
             feature_names = vectorizer.get_feature_names_out()
 

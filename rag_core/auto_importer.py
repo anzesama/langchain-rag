@@ -194,6 +194,15 @@ class AutoImportManager:
                 relations_added = 0
                 for rel in result["llm"]:
                     try:
+                        # 容错处理：检查必要字段是否存在
+                        if not isinstance(rel, dict):
+                            continue
+                        if "source" not in rel or "target" not in rel:
+                            continue
+                        if not rel["source"] or not rel["target"]:
+                            continue
+                        if not rel.get("type"):
+                            rel["type"] = "关联"  # 默认关系类型
                         extractor.wiki_db.add_relationship(
                             source_name=rel["source"],
                             target_name=rel["target"],
@@ -203,7 +212,7 @@ class AutoImportManager:
                         )
                         relations_added += 1
                     except Exception as e:
-                        logger.error(f"添加关系失败 {rel['source']}->{rel['target']}: {e}")
+                        logger.warning(f"添加关系失败 (跳过): {e}")
                 logger.info(f"LLM 导入: {entities_added} 实体, {relations_added} 关系")
             except Exception as e:
                 logger.warning(f"LLM 提取失败 {filepath}: {e}")

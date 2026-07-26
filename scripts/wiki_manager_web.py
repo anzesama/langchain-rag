@@ -632,7 +632,7 @@ HTML_TEMPLATE = """
             </div>
             <div class="form-group">
                 <label>实体类型</label>
-                <select id="entity-type">
+                <select id="entity-type" onchange="onEntityTypeChange()">
                     <option value="人物">人物</option>
                     <option value="蛊虫">蛊虫</option>
                     <option value="势力">势力</option>
@@ -640,7 +640,9 @@ HTML_TEMPLATE = """
                     <option value="地点">地点</option>
                     <option value="境界">境界</option>
                     <option value="未分类">未分类</option>
+                    <option value="__custom__">其他... (手动输入)</option>
                 </select>
+                <input type="text" id="entity-type-custom" placeholder="输入自定义分类" style="display:none; margin-top: 6px;">
             </div>
             <div class="form-group">
                 <label>属性（JSON格式）</label>
@@ -824,11 +826,31 @@ HTML_TEMPLATE = """
         function renderEntityTable() { /* moved to graph */ }
 
         // 实体模态框操作
+        function getEffectiveEntityType() {
+            var select = document.getElementById('entity-type');
+            if (select.value === '__custom__') {
+                return document.getElementById('entity-type-custom').value.trim() || '未分类';
+            }
+            return select.value;
+        }
+
+        function onEntityTypeChange() {
+            var select = document.getElementById('entity-type');
+            var custom = document.getElementById('entity-type-custom');
+            if (select.value === '__custom__') {
+                custom.style.display = 'block';
+            } else {
+                custom.style.display = 'none';
+            }
+        }
+
         function openAddEntityModal() {
             editingEntityId = null;
             document.getElementById('entity-modal-title').textContent = '添加实体';
             document.getElementById('entity-name').value = '';
             document.getElementById('entity-type').value = '未分类';
+            document.getElementById('entity-type-custom').style.display = 'none';
+            document.getElementById('entity-type-custom').value = '';
             document.getElementById('entity-properties').value = '{}';
             document.getElementById('entity-source').value = '';
             document.getElementById('entity-modal').style.display = 'block';
@@ -841,7 +863,23 @@ HTML_TEMPLATE = """
             editingEntityId = id;
             document.getElementById('entity-modal-title').textContent = '编辑实体';
             document.getElementById('entity-name').value = entity.name || '';
-            document.getElementById('entity-type').value = entity.type || '未分类';
+            var entityType = entity.type || '未分类';
+            var select = document.getElementById('entity-type');
+            var custom = document.getElementById('entity-type-custom');
+            // 检查是否在预设列表中
+            var presetValues = [];
+            for (var i = 0; i < select.options.length; i++) {
+                presetValues.push(select.options[i].value);
+            }
+            if (presetValues.indexOf(entityType) >= 0 && entityType !== '__custom__') {
+                select.value = entityType;
+                custom.style.display = 'none';
+                custom.value = '';
+            } else {
+                select.value = '__custom__';
+                custom.style.display = 'block';
+                custom.value = entityType === '未分类' ? '' : entityType;
+            }
             document.getElementById('entity-properties').value = entity.properties ? JSON.stringify(JSON.parse(entity.properties), null, 2) : '{}';
             document.getElementById('entity-source').value = entity.source_chapter || '';
             document.getElementById('entity-modal').style.display = 'block';
@@ -854,7 +892,7 @@ HTML_TEMPLATE = """
         // 保存实体
         async function saveEntity() {
             const name = document.getElementById('entity-name').value.trim();
-            const type = document.getElementById('entity-type').value;
+            const type = getEffectiveEntityType();
             const propertiesStr = document.getElementById('entity-properties').value;
             const source = document.getElementById('entity-source').value;
 

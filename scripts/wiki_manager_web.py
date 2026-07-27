@@ -1827,7 +1827,7 @@ if (data.relations.length === 0) {
                 var option = {
                     tooltip: {
                         formatter: function(p) {
-                            if (p.dataType === 'node') return '<strong>' + escapeHtml(p.data._content.name) + '</strong>';
+                            if (p.dataType === 'node' && p.data._raw) return '<strong>' + escapeHtml(p.data._raw.name) + '</strong>';
                             return escapeHtml(p.data.source) + ' → ' + escapeHtml(p.data.target);
                         }
                     },
@@ -1849,8 +1849,8 @@ if (data.relations.length === 0) {
                 gsChart.setOption(option);
                 gsChart.off('click');
                 gsChart.on('click', function(params) {
-                    if (params.dataType === 'node' && params.data._content) {
-                        expandNode(params.data._content.name);
+                    if (params.dataType === 'node' && params.data._raw) {
+                        expandNode(params.data._raw.name);
                     }
                 });
             }, 50);

@@ -293,51 +293,90 @@ class LLMExtractor:
         """
         jieba TF-IDF 关键词提取作为补充
 
-        返回频率最高的关键词作为潜在实体
+        使用 jieba.analyse.extract_tags 提取有区分度的关键词，
+        配合停用词过滤、词长过滤、Markdown符号过滤，作为高质量补充实体。
         """
-        import jieba
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        from sklearn.cluster import KMeans
-        import numpy as np
+        import jieba.analyse
 
         if not text or not text.strip():
             return {'entities': [], 'relations': []}
 
         try:
-            # 简单的分句
-            sentences = [s.strip() for s in text.split('。') if len(s.strip()) > 10]
+            # 停用词表（常见无意义词 + 过于泛化的词）
+            STOP_WORDS = {
+                '的', '了', '是', '在', '和', '与', '或', '等', '及',
+                '其中', '也', '就', '都', '但', '而', '可以', '使用',
+                '一个', '一些', '一种', '这个', '这些', '那些', '这样', '那样',
+                '什么', '怎么', '如何', '为什么', '哪个', '哪里', '哪',
+                '它', '他', '她', '它们', '我们', '他们', '你们', '自己',
+                '这', '那', '之', '以', '为', '被', '把', '给', '很', '最',
+                '因为', '所以', '虽然', '但是', '如果', '已经', '然后', '例如',
+                '用于', '通过', '进行', '部分', '其他', '包括', '不同', '以及',
+                '数据', '模型', '方法', '结果', '问题', '情况', '方式', '过程',
+                '内容', '信息', '文件', '代码', '时间', '中', '对', '从', '到',
+                '上', '下', '第', '该', '更', '关于', '相关', '相同',
+                '可能', '非常', '一些', '很多', '用户', '系统', '继续', '或者',
+                '并且', '即', '如', '还', '仅', '只', '将', '已', '都', '吗',
+                '不', '没有', '所有', '每个', '等等', '不是', '实际上',
+                '几乎', '即将', '任何', '几个', '除非', '特征', '列', '行',
+                '值', '样本', '目', '么', '非常', '特', '会', '你', 'I',
+                '需要', '能', '要', '当', '时', '后', '前', '则', '之',
+                '与', '超', '高', '低', '大', '小', '新', '旧', '多',
+                '少', '它', '间', '内', '外', '此', '其', '每', '次',
+                '被称为', '而言', '来说', '所示', '如下', '上述', '下面',
+            }
 
-            if len(sentences) < 2:
-                return {'entities': [], 'relations': []}
+            # 无意义的英文通用词
+            ENGLISH_STOP = {
+                'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+                'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+                'can', 'could', 'may', 'might', 'shall', 'should', 'must',
+                'it', 'we', 'you', 'he', 'she', 'they', 'me', 'us', 'him',
+                'her', 'them', 'my', 'our', 'your', 'his', 'its', 'their',
+                'this', 'that', 'these', 'those', 'all', 'some', 'any', 'no',
+                'not', 'but', 'and', 'or', 'if', 'then', 'else', 'for',
+                'with', 'without', 'from', 'into', 'onto', 'up', 'down',
+                'out', 'in', 'on', 'at', 'by', 'to', 'of', 'about', 'also',
+                'only', 'just', 'so', 'very', 'such', 'one', 'two', 'three',
+                'already', 'more', 'less', 'much', 'many', 'most', 'both',
+                'another', 'each', 'every', 'other', 'same', 'different',
+                'used', 'using', 'based', 'called', 'found', 'given',
+                'too', 'well', 'still', 'even', 'yet', 'often',
+            }
 
-            # TF-IDF 提取关键词
-            vectorizer = TfidfVectorizer(max_features=100, stop_words=None)
-            tfidf_matrix = vectorizer.fit_transform(sentences)
-            feature_names = vectorizer.get_feature_names_out()
-
-            # 按句子聚合关键词
-            entity_keywords = {}
-            for i, sentence in enumerate(sentences):
-                words = jieba.lcut(sentence)
-                # 过滤停用词和短词
-                words = [w for w in words if len(w) >= 2 and w not in ['的', '了', '是', '在', '和', '与', '或', '等', '以及', '其中']]
-                for word in words:
-                    if word not in entity_keywords:
-                        entity_keywords[word] = 0
-                    entity_keywords[word] += 1
-
-            # 取前20个关键词
-            sorted_keywords = sorted(entity_keywords.items(), key=lambda x: x[1], reverse=True)[:20]
+            # jieba TF-IDF 关键词提取（topK=50, 过滤短词）
+            all_tags = jieba.analyse.extract_tags(text, topK=50)
 
             entities = []
-            for word, freq in sorted_keywords:
+            for tag in all_tags:
+                # 过滤：长度 ≥2、不含 Markdown 标记、不含 URL
+                if len(tag) < 2:
+                    continue
+                if tag.startswith('http'):
+                    continue
+                if tag.count('#') >= 2:  # Markdown 标题标记
+                    continue
+                # 纯数字/符号
+                if tag.replace('.', '').replace('-', '').replace('_', '').replace('/', '').replace('+', '').replace('*', '').replace('),', '').replace('(','').strip() == '':
+                    continue
+                # 停用词过滤（中文 + 英文）
+                if tag in STOP_WORDS or tag.lower() in ENGLISH_STOP:
+                    continue
+                # 纯 ASCII 通用词（长度 ≤4 且有英文通用词气质）过滤
+                if tag.isascii() and len(tag) <= 4 and tag.lower() in ENGLISH_STOP:
+                    continue
+
                 entities.append({
-                    "name": word,
+                    "name": tag,
                     "type": "关键词",
-                    "description": f"jieba关键词提取 (频率: {freq}, 来源: jieba)",
-                    "confidence": freq,
-                    "method": "jieba"
+                    "description": f"jieba TF-IDF 关键词提取 (来源: jieba_tfidf)",
+                    "confidence": 0.7,
+                    "method": "jieba_tfidf"
                 })
+
+                # 限制最多返回 20 个
+                if len(entities) >= 20:
+                    break
 
             return {
                 "entities": entities,

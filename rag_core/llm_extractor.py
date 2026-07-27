@@ -39,16 +39,17 @@ class LLMExtractor:
             {
                 'llm': [LLMEntity, ...],
                 'regex': [Entity, ...],
-                'jieba': [Entity, ...]
+                'jieba': [Entity, ...],
+                'relations': [Relation, ...]
             }
         """
-        # 1. LLM 提取
+        # 1. LLM 提取（包含实体和关系）
         llm_result = self._llm_extract(text)
 
-        # 2. 正则提取
+        # 2. 正则提取（只提取实体）
         regex_result = self._regex_extract(text)
 
-        # 3. jieba 提取
+        # 3. jieba 提取（只提取实体）
         jieba_result = self._jieba_extract(text)
 
         # 去重: LLM 结果作为基准, 过滤掉与 LLM 重复的实体
@@ -56,10 +57,18 @@ class LLMExtractor:
         filtered_regex = [e for e in regex_result.get("entities", []) if e["name"] not in llm_entity_names]
         filtered_jieba = [e for e in jieba_result.get("entities", []) if e["name"] not in llm_entity_names]
 
+        # 合并实体（LLM + 正则 + jieba）
+        all_entities = llm_result["entities"] + filtered_regex + filtered_jieba
+
+        # 合并关系（LLM + 正则）
+        all_relations = llm_result.get("relations", []) + regex_result.get("relations", [])
+
         return {
             'llm': llm_result["entities"],
             'regex': filtered_regex,
-            'jieba': filtered_jieba
+            'jieba': filtered_jieba,
+            'entities': all_entities,
+            'relations': all_relations
         }
 
     def _llm_extract(self, text: str) -> Dict[str, Any]:

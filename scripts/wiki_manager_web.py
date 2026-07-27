@@ -1428,9 +1428,17 @@ if (data.relations.length === 0) {
                 _raw: e
             }));
 
-            const links = relations.map(r => ({
-                source: r.source_name || 'unknown',
-                target: r.target_name || 'unknown',
+            // 构建实体名称 set 用于过滤无效关系
+            const entityNameSet = new Set(entities.map(e => e.name));
+
+            const links = relations.filter(r => {
+                // 过滤掉 source 或 target 不存在于实体列表中的关系
+                const srcOk = r.source_name && entityNameSet.has(r.source_name);
+                const tgtOk = r.target_name && entityNameSet.has(r.target_name);
+                return srcOk && tgtOk;
+            }).map(r => ({
+                source: r.source_name,
+                target: r.target_name,
                 name: r.rel_type,
                 lineStyle: { width: 2, curveness: 0.3 }
             }));
@@ -2017,6 +2025,8 @@ def get_relations():
                 FROM relationships r
                 LEFT JOIN entities src ON r.source_id = src.id
                 LEFT JOIN entities tgt ON r.target_id = tgt.id
+                WHERE src.name IS NOT NULL AND src.name != ''
+                  AND tgt.name IS NOT NULL AND tgt.name != ''
                 ORDER BY r.id DESC
                 LIMIT ?
             ''', (limit,))

@@ -841,6 +841,15 @@ HTML_TEMPLATE = """
                 if (e.key === 'Enter') searchKnowledge();
             });
 
+            // 清理面板事件代理（删除按钮）
+            document.addEventListener('click', function(e) {
+                var btn = e.target.closest('.btn-cleanup-delete');
+                if (btn) {
+                    var eid = btn.getAttribute('data-eid');
+                    if (eid) deleteOneEntity(eid);
+                }
+            });
+
             // 加载数据
             loadStats();
             loadEntities();
@@ -1124,11 +1133,14 @@ HTML_TEMPLATE = """
                     if (r.target_name) { relCountMap[r.target_name] = (relCountMap[r.target_name] || 0) + 1; }
                 });
 
-                cleanupEntities = entData.entities.map(e => ({
+                cleanupEntities = allEntities.map(e => ({
                     ...e,
                     _relCount: relCountMap[e.name] || 0
                 }));
                 cleanupSelected.clear();
+
+                console.log('[cleanup] 已加载实体:', cleanupEntities.length, '关系:', allRelations.length);
+                console.log('[cleanup] 实体示例:', cleanupEntities.slice(0, 3));
 
                 // 填充类型过滤下拉
                 const types = [...new Set(cleanupEntities.map(e => e.type || '未分类'))];
@@ -1139,7 +1151,7 @@ HTML_TEMPLATE = """
                 renderCleanupList();
             } catch(e) {
                 console.error('加载清洗数据失败:', e);
-                showToast('加载清洗数据失败: ' + e.message, 'error');
+                document.getElementById('cleanup-tbody').innerHTML = '<tr><td colspan="6" style="padding: 20px; text-align: center; color: red;">加载失败: ' + e.message + '</td></tr>';
             }
         }
 
@@ -1178,7 +1190,7 @@ HTML_TEMPLATE = """
                 html += '<td style="padding: 4px; text-align: center; font-size: 12px;">' + (e.type || '未分类') + '</td>';
                 html += '<td style="padding: 4px; text-align: center;">' + (e.name || '').length + '</td>';
                 html += '<td style="padding: 4px; text-align: center;">' + e._relCount + '</td>';
-                html += '<td style="padding: 4px; text-align: center;"><button class="btn btn-sm btn-danger" onclick="deleteOneEntity(\'' + e.id + '\')" style="padding: 2px 8px; font-size: 12px; background: #ff4d4f; color: #fff; border: none; border-radius: 3px; cursor: pointer;">删除</button></td>';
+                html += '<td style="padding: 4px; text-align: center;"><button class="btn btn-sm btn-danger btn-cleanup-delete" data-eid="' + e.id + '" style="padding: 2px 8px; font-size: 12px; background: #ff4d4f; color: #fff; border: none; border-radius: 3px; cursor: pointer;">删除</button></td>';
                 html += '</tr>';
             });
             document.getElementById('cleanup-tbody').innerHTML = html;

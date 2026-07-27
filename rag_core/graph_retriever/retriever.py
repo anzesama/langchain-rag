@@ -45,8 +45,8 @@ def retrieve(query: str, top_k: int = 10, hops: int = 2) -> Dict:
     seed_relations = []
     seed_entity_names = set()
 
-    for r in results:
-        decoded = decode_relation(r.page_content)
+    for doc, score in results:
+        decoded = decode_relation(doc.page_content)
         if decoded:
             seed_relations.append(decoded)
             seed_entity_names.add(decoded['source'])

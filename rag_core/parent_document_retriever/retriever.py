@@ -51,21 +51,22 @@ class ParentDocumentRetriever:
 
         # 2. 提取父块 ID
         parent_ids = set()
-        for doc in child_docs:
+        for doc, score in child_docs:
             parent_id = doc.metadata.get('parent_id')
             if parent_id:
                 parent_ids.add(parent_id)
 
         if not parent_ids:
             logger.info("父子检索无父块 ID")
-            return child_docs
+            return [doc for doc, score in child_docs]
 
         logger.info(f"检索到 {len(parent_ids)} 个父块 ID")
 
         # 3. 召回父块（通过 chunk_id）
         parent_docs = self._get_parent_chunks(parent_ids)
 
-        # 4. 返回父子上下文
+        # 4. 返回父子上下文（将子块元组转换为 Document 列表）
+        child_docs = [doc for doc, score in child_docs]
         result = child_docs + parent_docs
         logger.info(f"父子检索完成: {len(child_docs)} 子块 + {len(parent_docs)} 父块")
 

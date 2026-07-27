@@ -462,16 +462,20 @@ class KnowledgeBase:
             parent_retriever = ParentDocumentRetriever(vector_store=self.vector_store)
             parent_results = parent_retriever.retrieve(query, top_k=3)
             
-            # 合并父子检索结果
-            all_results = list(vector_results) + list(parent_results)
+            # 合并父子检索结果（将元组转换为 Document 列表）
+            vector_docs = [doc for doc, score in vector_results]
+            parent_docs = parent_results
+            all_results = vector_docs + parent_docs
             
             # 去重（基于 content 哈希）
             seen = set()
             unique_results = []
-            for doc, score in all_results:
+            for doc in all_results:
                 content_hash = hash(doc.page_content)
                 if content_hash not in seen:
                     seen.add(content_hash)
+                    # 获取 score（从向量库的元数据中）
+                    score = 0.5  # 默认分数
                     unique_results.append((doc, score))
             
             vector_results = unique_results

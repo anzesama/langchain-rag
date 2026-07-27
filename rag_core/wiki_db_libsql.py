@@ -341,6 +341,48 @@ class WikiDB:
             logger.error(f"获取所有实体失败: {e}")
             return []
 
+    def get_all_relationships(self) -> List[Dict]:
+        """
+        获取所有关系
+        
+        Returns:
+            关系列表，每个关系包含 source_name, target_name, rel_type, properties 等
+        """
+        try:
+            conn = self.connect()
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT 
+                    r.id, 
+                    e1.name as source_name,
+                    e2.name as target_name,
+                    r.rel_type,
+                    r.properties,
+                    r.source_chapter
+                FROM relationships r
+                JOIN entities e1 ON r.source_id = e1.id
+                JOIN entities e2 ON r.target_id = e2.id
+                ORDER BY r.id
+            ''')
+            rows = cursor.fetchall()
+            conn.close()
+
+            return [
+                {
+                    "id": row['id'],
+                    "source_name": row['source_name'],
+                    "target_name": row['target_name'],
+                    "rel_type": row['rel_type'],
+                    "properties": json.loads(row['properties']) if row['properties'] else {},
+                    "source_chapter": row['source_chapter']
+                }
+                for row in rows
+            ]
+        except Exception as e:
+            logger.error(f"获取所有关系失败: {e}")
+            return []
+
     def get_entities_by_type(self, entity_type: str) -> List[Dict]:
         """
         按类型查询所有实体

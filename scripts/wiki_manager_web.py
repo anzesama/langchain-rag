@@ -2137,28 +2137,30 @@ def add_relation():
 
 @app.route('/api/entities/batch-delete', methods=['POST'])
 def batch_delete_entities():
-    """批量删除实体"""
+    """批量删除实体及其关联关系"""
     try:
         data = request.json
-        entity_ids = data.get('entity_ids', [])
+        entity_ids = data.get('ids', data.get('entity_ids', []))
 
         if not entity_ids:
             return jsonify({"success": False, "error": "未提供实体ID列表"}), 400
 
-        wiki_db = WikiDB(str(DB_PATH))
-        wiki_db.init_db()
-
-        deleted_count = 0
-        for entity_id in entity_ids:
-            try:
-                wiki_db.delete_entity(entity_id)
-                deleted_count += 1
-            except Exception as e:
-                logger.warning(f"删除实体 {entity_id} 失败: {e}")
-
-        return jsonify({"success": True, "deleted_count": deleted_count})
+        conn = get_db_connection()
+        try:
+            # 先删除关联的关系
+            for eid in entity_ids:
+                conn.execute('DELETE FROM relationships WHERE source_id = ? OR target_id = ?', (eid, eid))
+            # 删除实体
+            placeholders = ','.join(['?'] * len(entity_ids))
+            conn.execute(f'DELETE FROM entities WHERE id IN ({placeholders})', entity_ids)
+            conn.commit()
+            deleted = conn.total_changes
+            return jsonify({"success": True, "deleted": deleted, "ids": entity_ids})
+        finally:
+            conn.close()
     except Exception as e:
-        return jsonify({"success": False, "error": "操作失败，请查看日志"}), 500
+        logger.error(f"批量删除失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/api/entities/batch-approve', methods=['POST'])

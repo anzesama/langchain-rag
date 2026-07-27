@@ -1104,17 +1104,21 @@ HTML_TEMPLATE = """
         // ========== 审核清理面板 ==========
         async function loadCleanupData() {
             try {
-                // 重新加载全量实体和关系
-                const [entResp, relResp] = await Promise.all([
-                    fetch('/api/entities?connected_only=false&limit=5000'),
-                    fetch('/api/relations?limit=5000')
-                ]);
-                const entData = await entResp.json();
-                const relData = await relResp.json();
+                // 使用页面已加载的实体和关系（避免重复请求失败）
+                if (!entities || entities.length === 0) {
+                    const entResp = await fetch('/api/entities?connected_only=false&limit=5000');
+                    const entData = await entResp.json();
+                    entities = entData.entities;
+                }
+                if (!relations || relations.length === 0) {
+                    const relResp = await fetch('/api/relations?limit=5000');
+                    const relData = await relResp.json();
+                    relations = relData.relations;
+                }
 
                 // 计算每个实体的关系数
                 const relCountMap = {};
-                relData.relations.forEach(r => {
+                relations.forEach(r => {
                     if (r.source_name) { relCountMap[r.source_name] = (relCountMap[r.source_name] || 0) + 1; }
                     if (r.target_name) { relCountMap[r.target_name] = (relCountMap[r.target_name] || 0) + 1; }
                 });

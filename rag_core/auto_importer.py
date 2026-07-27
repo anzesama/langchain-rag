@@ -191,8 +191,9 @@ class AutoImportManager:
                         entities_added += 1
                     except Exception as e:
                         logger.error(f"添加实体失败 {entity['name']}: {e}")
+                # 使用新的返回结构：result["relations"]
                 relations_added = 0
-                for rel in result["llm"]:
+                for rel in result.get("relations", []):
                     try:
                         # 容错处理：检查必要字段是否存在
                         if not isinstance(rel, dict):

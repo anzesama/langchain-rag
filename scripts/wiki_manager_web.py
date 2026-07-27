@@ -547,6 +547,19 @@ HTML_TEMPLATE = """
                 <div id="graph-chart"></div>
                 <div class="graph-info">
                     实体数: <span id="graph-entity-count">0</span> | 关系数: <span id="graph-relation-count">0</span>
+                    <span style="margin-left: 16px;">
+                        显示数量:
+                        <select id="graph-limit" onchange="reloadGraphData()" style="padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; margin-left: 6px;">
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                            <option value="200" selected>200</option>
+                            <option value="500">500</option>
+                            <option value="0">全部</option>
+                        </select>
+                        <label style="cursor: pointer; margin-left: 12px; color: #666;">
+                            <input type="checkbox" id="graph-connected-only" checked onchange="reloadGraphData()"> 仅已连接
+                        </label>
+                    </span>
                 </div>
                 <div id="detail-panel" class="detail-panel">
                     <h3>实体详情</h3>
@@ -808,10 +821,31 @@ HTML_TEMPLATE = """
             }
         }
 
+        // 重新加载图谱数据（数量/复选框变化时触发）
+        async function reloadGraphData() {
+            await Promise.all([loadEntities(), loadRelations()]);
+            loadGraph();
+        }
+
         // 加载实体列表
         async function loadEntities() {
             try {
-                const res = await fetch('/api/entities');
+                let url = '/api/entities';
+                // 从图表面板读取参数
+                const connectedChk = document.getElementById('graph-connected-only');
+                const limitSel = document.getElementById('graph-limit');
+                if (connectedChk && connectedChk.checked) {
+                    url += '?connected_only=true';
+                } else {
+                    url += '?connected_only=false';
+                }
+                if (limitSel) {
+                    let limitVal = parseInt(limitSel.value);
+                    url += '&limit=' + (limitVal > 0 ? limitVal : 10000);
+                } else {
+                    url += '&limit=500';
+                }
+                const res = await fetch(url);
                 const data = await res.json();
 
                 entities = data.entities;
@@ -990,7 +1024,12 @@ HTML_TEMPLATE = """
         // 加载关系列表
         async function loadRelations() {
             try {
-                const res = await fetch('/api/relations');
+                let url = '/api/relations';
+                const limitSel = document.getElementById('graph-limit');
+                let limitVal = parseInt(limitSel ? limitSel.value : 500);
+                let limit = limitVal > 0 ? limitVal : 10000;
+                url += '?limit=' + limit;
+                const res = await fetch(url);
                 const data = await res.json();
 
                 relations = data.relations;
@@ -1860,6 +1899,7 @@ def api_entities():
         query = request.args.get('query', '')  # 搜索关键词（可选）
         entity_filter = request.args.get('entity_name', '')  # 单实体扩展模式
         limit = request.args.get('limit', 500, type=int)
+        connected_only = request.args.get('connected_only', '').lower() in ('1', 'true', 'yes')
 
         if query:
             # 搜索模式
@@ -1884,34 +1924,48 @@ def api_entities():
             ''', (entity_filter, entity_filter, limit))
             entities = [dict(row) for row in cursor.fetchall()]
         else:
-            # 默认模式：优先显示有关系的实体（图谱有意义）
-            cursor = conn.execute('''
-                SELECT e.id, e.name, e.type, e.properties, e.source_chapter, e.status
-                FROM entities e
-                WHERE e.id IN (
-                    SELECT DISTINCT source_id FROM relationships
-                    UNION
-                    SELECT DISTINCT target_id FROM relationships
-                )
-                ORDER BY e.id DESC
-                LIMIT ?
-            ''', (limit,))
-            entities = [dict(row) for row in cursor.fetchall()]
-
-            # 不够限额时补充孤立的
-            if len(entities) < limit:
-                cursor2 = conn.execute('''
+            if connected_only:
+                # 仅返回有关系的实体
+                cursor = conn.execute('''
                     SELECT e.id, e.name, e.type, e.properties, e.source_chapter, e.status
                     FROM entities e
-                    WHERE e.id NOT IN (
+                    WHERE e.id IN (
                         SELECT DISTINCT source_id FROM relationships
                         UNION
                         SELECT DISTINCT target_id FROM relationships
                     )
                     ORDER BY e.id DESC
                     LIMIT ?
-                ''', (limit - len(entities),))
-                entities.extend([dict(row) for row in cursor2.fetchall()])
+                ''', (limit,))
+                entities = [dict(row) for row in cursor.fetchall()]
+            else:
+                # 优先显示有关系的实体 + 不够时补孤立的
+                cursor = conn.execute('''
+                    SELECT e.id, e.name, e.type, e.properties, e.source_chapter, e.status
+                    FROM entities e
+                    WHERE e.id IN (
+                        SELECT DISTINCT source_id FROM relationships
+                        UNION
+                        SELECT DISTINCT target_id FROM relationships
+                    )
+                    ORDER BY e.id DESC
+                    LIMIT ?
+                ''', (limit,))
+                entities = [dict(row) for row in cursor.fetchall()]
+
+                if len(entities) < limit:
+                    cursor2 = conn.execute('''
+                        SELECT e.id, e.name, e.type, e.properties, e.source_chapter, e.status
+                        FROM entities e
+                        WHERE e.id NOT IN (
+                            SELECT DISTINCT source_id FROM relationships
+                            UNION
+                            SELECT DISTINCT target_id FROM relationships
+                        )
+                        ORDER BY e.id DESC
+                        LIMIT ?
+                    ''', (limit - len(entities),))
+                    entities.extend([dict(row) for row in cursor2.fetchall()])
 
         return jsonify({"entities": entities})
     finally:

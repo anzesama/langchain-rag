@@ -54,16 +54,23 @@ def retrieve(query: str, top_k: int = 10, hops: int = 2) -> Dict:
 
     logger.info(f"向量召回 {len(seed_relations)} 条关系，涉及 {len(seed_entity_names)} 个实体")
 
-    # 2. 图库扩展（2-hop）
+    # 2. 图库扩展（2-hop）- 使用缓存优化
     expanded_nodes = {}
     expanded_edges = []
     visited = set(seed_entity_names)
     frontier = set(seed_entity_names)
 
+    # 缓存实体关系查询结果
+    entity_relations_cache = {}
+
     for _ in range(hops):
         next_frontier = set()
         for entity_name in frontier:
-            rels = wiki_db.get_relations(entity_name)
+            # 使用缓存避免重复数据库查询
+            if entity_name not in entity_relations_cache:
+                entity_relations_cache[entity_name] = wiki_db.get_relations(entity_name)
+            
+            rels = entity_relations_cache[entity_name]
             for rel in rels:
                 neighbor = rel['target'] if rel['source'] == entity_name else rel['source']
                 if neighbor not in visited:

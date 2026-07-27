@@ -20,6 +20,8 @@ from rag_core.auto_importer import AutoImportManager
 from rag_core.parent_index_builder import build_parent_index_async
 from rag_core.lsh_index import LSHIndexManager
 from rag_core.resume_loader import ResumeLoader
+from rag_core.graph_retriever import retrieve, to_prompt_context
+from rag_core.parent_document_retriever import ParentDocumentRetriever
 
 
 class KnowledgeBase:
@@ -438,8 +440,43 @@ class KnowledgeBase:
         # 预热 ChromaDB（避免首次搜索慢）
         self._warmup_vector_store()
         
-        # 直接调用 retrieve，不经过 LLM 生成
-        results = self.pipeline.retrieve(query, top_k, score_threshold, source)
+        # 1. 向量检索（原有逻辑）
+        vector_results = self.pipeline.retrieve(query, top_k, score_threshold, source)
+        
+        # 2. 图检索（新增）
+        try:
+            from rag_core.graph_retriever import retrieve, to_prompt_context
+            graph_result = retrieve(query, top_k=3, hops=2)
+            graph_context = to_prompt_context(graph_result)
+            
+            # 将图上下文添加到结果中
+            if graph_context:
+                for doc, score in vector_results:
+                    doc.page_content = graph_context + "\n\n" + doc.page_content
+        except Exception as e:
+            logger.warning(f"图检索失败: {e}")
+        
+        # 3. 父子检索（新增）
+        try:
+            from rag_core.parent_document_retriever import ParentDocumentRetriever
+            parent_retriever = ParentDocumentRetriever(vector_store=self.vector_store)
+            parent_results = parent_retriever.retrieve(query, top_k=3)
+            
+            # 合并父子检索结果
+            all_results = list(vector_results) + list(parent_results)
+            
+            # 去重（基于 content 哈希）
+            seen = set()
+            unique_results = []
+            for doc, score in all_results:
+                content_hash = hash(doc.page_content)
+                if content_hash not in seen:
+                    seen.add(content_hash)
+                    unique_results.append((doc, score))
+            
+            vector_results = unique_results
+        except Exception as e:
+            logger.warning(f"父子检索失败: {e}")
         
         return [
             {
@@ -447,7 +484,7 @@ class KnowledgeBase:
                 "content": doc.page_content,
                 "score": round(score, 4)
             }
-            for doc, score in results
+            for doc, score in vector_results
         ]
 
     def list_documents(self) -> List[Dict]:

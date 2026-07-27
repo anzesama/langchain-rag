@@ -530,6 +530,7 @@ HTML_TEMPLATE = """
             <button class="nav-tab active" data-panel="graph">知识图谱</button>
             <button class="nav-tab" data-panel="llm">LLM 辅助判断</button>
             <button class="nav-tab" data-panel="search">知识库搜索</button>
+            <button class="nav-tab" data-panel="cleanup">审核清理</button>
         </div>
 
         <!-- Graph Panel -->
@@ -632,6 +633,58 @@ HTML_TEMPLATE = """
             <div id="search-results" style="max-height: 600px; overflow-y: auto;">
                 <div class="empty-state">输入关键词开始语义搜索</div>
             </div>
+        </div>
+    </div>
+
+    <!-- 审核清理面板 -->
+    <div class="panel" id="panel-cleanup" style="display: none;">
+        <div class="panel-header">
+            <div class="panel-title">审核清理</div>
+            <div style="display: flex; gap: 10px;">
+                <button class="btn btn-danger" onclick="batchDeleteCleanup()" id="btn-batch-delete" disabled>批量删除所选</button>
+            </div>
+        </div>
+
+        <!-- 过滤条件 -->
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; align-items: center;">
+            <label>名称长度:</label>
+            <select id="filter-len" onchange="renderCleanupList()" style="padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px;">
+                <option value="all">全部</option>
+                <option value="short">短 (≤3字)</option>
+                <option value="mid">中 (4-80字)</option>
+                <option value="long">长 (>80字)</option>
+            </select>
+
+            <label>关系状态:</label>
+            <select id="filter-rel" onchange="renderCleanupList()" style="padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px;">
+                <option value="all">全部</option>
+                <option value="connected">有连接关系</option>
+                <option value="isolated">无连接关系</option>
+            </select>
+
+            <label>类型:</label>
+            <select id="filter-type" onchange="renderCleanupList()" style="padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px;">
+                <option value="all">全部</option>
+            </select>
+
+            <span id="cleanup-stats" style="margin-left: auto; color: #666; font-size: 13px;"></span>
+        </div>
+
+        <!-- 实体列表 -->
+        <div style="max-height: 650px; overflow-y: auto; border: 1px solid #eee; border-radius: 4px;">
+            <table style="width: 100%; border-collapse: collapse;" id="cleanup-table">
+                <thead>
+                    <tr style="background: #fafafa; position: sticky; top: 0; z-index: 1;">
+                        <th style="padding: 8px; width: 40px;"><input type="checkbox" id="select-all" onchange="toggleAllClean(this)"></th>
+                        <th style="padding: 8px; text-align: left;">实体名</th>
+                        <th style="padding: 8px; width: 80px;">类型</th>
+                        <th style="padding: 8px; width: 60px;">长度</th>
+                        <th style="padding: 8px; width: 60px;">关系</th>
+                        <th style="padding: 8px; width: 120px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="cleanup-tbody"></tbody>
+            </table>
         </div>
     </div>
 
@@ -742,6 +795,8 @@ HTML_TEMPLATE = """
         let editingEntityId = null;
         let editingRelationId = null;
         let graphChart = null;
+        let cleanupEntities = [];
+        let cleanupSelected = new Set();
         let selectedEntity = null;
         let connectingSource = null;
         let connectingSourceName = null;
@@ -765,6 +820,9 @@ HTML_TEMPLATE = """
             // 仅在图表面板加载图谱
             if (panelName === 'graph') {
                 loadGraph();
+            }
+            if (panelName === 'cleanup') {
+                loadCleanupData();
             }
         }
 
@@ -1042,6 +1100,167 @@ HTML_TEMPLATE = """
 
         // 渲染关系表格（已移至图谱面板）
         function renderRelationTable() { /* moved to graph */ }
+
+        // ========== 审核清理面板 ==========
+        async function loadCleanupData() {
+            try {
+                // 重新加载全量实体和关系
+                const [entResp, relResp] = await Promise.all([
+                    fetch('/api/entities?connected_only=false&limit=5000'),
+                    fetch('/api/relations?limit=5000')
+                ]);
+                const entData = await entResp.json();
+                const relData = await relResp.json();
+
+                // 计算每个实体的关系数
+                const relCountMap = {};
+                relData.relations.forEach(r => {
+                    if (r.source_name) { relCountMap[r.source_name] = (relCountMap[r.source_name] || 0) + 1; }
+                    if (r.target_name) { relCountMap[r.target_name] = (relCountMap[r.target_name] || 0) + 1; }
+                });
+
+                cleanupEntities = entData.entities.map(e => ({
+                    ...e,
+                    _relCount: relCountMap[e.name] || 0
+                }));
+                cleanupSelected.clear();
+
+                // 填充类型过滤下拉
+                const types = [...new Set(cleanupEntities.map(e => e.type || '未分类'))];
+                const typeSel = document.getElementById('filter-type');
+                typeSel.innerHTML = '<option value="all">全部</option>' +
+                    types.map(t => '<option value="' + t + '">' + t + '</option>').join('');
+
+                renderCleanupList();
+            } catch(e) {
+                console.error('加载清洗数据失败:', e);
+                showToast('加载清洗数据失败: ' + e.message, 'error');
+            }
+        }
+
+        function renderCleanupList() {
+            if (!cleanupEntities || cleanupEntities.length === 0) return;
+
+            const lenFilter = document.getElementById('filter-len').value;
+            const relFilter = document.getElementById('filter-rel').value;
+            const typeFilter = document.getElementById('filter-type').value;
+
+            let filtered = cleanupEntities.filter(e => {
+                // 名称长度过滤
+                const nlen = (e.name || '').length;
+                if (lenFilter === 'short' && nlen > 3) return false;
+                if (lenFilter === 'mid' && (nlen <= 3 || nlen > 80)) return false;
+                if (lenFilter === 'long' && nlen <= 80) return false;
+                // 关系过滤
+                if (relFilter === 'connected' && e._relCount === 0) return false;
+                if (relFilter === 'isolated' && e._relCount > 0) return false;
+                // 类型过滤
+                if (typeFilter !== 'all' && (e.type || '未分类') !== typeFilter) return false;
+                return true;
+            });
+
+            document.getElementById('cleanup-stats').textContent =
+                '匹配 ' + filtered.length + ' / ' + cleanupEntities.length + ' 个实体';
+
+            let html = '';
+            filtered.forEach(e => {
+                const checked = cleanupSelected.has(e.id) ? 'checked' : '';
+                let nameDisp = e.name || '（空）';
+                if (nameDisp.length > 60) nameDisp = nameDisp.substring(0, 60) + '...';
+                html += '<tr style="border-bottom: 1px solid #eee;">';
+                html += '<td style="padding: 4px; text-align: center;"><input type="checkbox" value="' + e.id + '" ' + checked + ' onchange="toggleCleanup(this)"></td>';
+                html += '<td style="padding: 4px;" title="' + (e.name || '').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '">' + nameDisp + '</td>';
+                html += '<td style="padding: 4px; text-align: center; font-size: 12px;">' + (e.type || '未分类') + '</td>';
+                html += '<td style="padding: 4px; text-align: center;">' + (e.name || '').length + '</td>';
+                html += '<td style="padding: 4px; text-align: center;">' + e._relCount + '</td>';
+                html += '<td style="padding: 4px; text-align: center;"><button class="btn btn-sm btn-danger" onclick="deleteOneEntity(\'' + e.id + '\')" style="padding: 2px 8px; font-size: 12px; background: #ff4d4f; color: #fff; border: none; border-radius: 3px; cursor: pointer;">删除</button></td>';
+                html += '</tr>';
+            });
+            document.getElementById('cleanup-tbody').innerHTML = html;
+
+            // 更新全选复选框状态
+            document.getElementById('select-all').checked =
+                filtered.length > 0 && filtered.every(e => cleanupSelected.has(e.id));
+            document.getElementById('btn-batch-delete').disabled = cleanupSelected.size === 0;
+            document.getElementById('btn-batch-delete').textContent = '批量删除所选 (' + cleanupSelected.size + ')';
+        }
+
+        function toggleCleanup(checkbox) {
+            if (checkbox.checked) cleanupSelected.add(checkbox.value);
+            else cleanupSelected.delete(checkbox.value);
+            renderCleanupList();
+        }
+
+        function toggleAllClean(master) {
+            const lenFilter = document.getElementById('filter-len').value;
+            const relFilter = document.getElementById('filter-rel').value;
+            const typeFilter = document.getElementById('filter-type').value;
+
+            const visibleIds = cleanupEntities.filter(e => {
+                const nlen = (e.name || '').length;
+                if (lenFilter === 'short' && nlen > 3) return false;
+                if (lenFilter === 'mid' && (nlen <= 3 || nlen > 80)) return false;
+                if (lenFilter === 'long' && nlen <= 80) return false;
+                if (relFilter === 'connected' && e._relCount === 0) return false;
+                if (relFilter === 'isolated' && e._relCount > 0) return false;
+                if (typeFilter !== 'all' && (e.type || '未分类') !== typeFilter) return false;
+                return true;
+            }).map(e => e.id);
+
+            if (main.checked) {
+                visibleIds.forEach(id => cleanupSelected.add(id));
+            } else {
+                visibleIds.forEach(id => cleanupSelected.delete(id));
+            }
+            renderCleanupList();
+        }
+
+        async function deleteOneEntity(eid) {
+            if (!confirm('确认删除此实体及其所有关联关系？')) return;
+            try {
+                const resp = await fetch('/api/entities/batch-delete', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ids: [eid]})
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    showToast('已删除', 'success');
+                    cleanupSelected.delete(eid);
+                    await Promise.all([loadEntities(), loadRelations()]);
+                    loadCleanupData();
+                } else {
+                    showToast('删除失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch(e) {
+                showToast('删除失败: ' + e.message, 'error');
+            }
+        }
+
+        async function batchDeleteCleanup() {
+            if (cleanupSelected.size === 0) return;
+            if (!confirm('确认删除 ' + cleanupSelected.size + ' 个实体及其所有关联关系吗？此操作不可恢复！')) return;
+            try {
+                const ids = Array.from(cleanupSelected);
+                const resp = await fetch('/api/entities/batch-delete', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ids: ids})
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    showToast('已删除 ' + data.deleted + ' 个实体', 'success');
+                    cleanupSelected.clear();
+                    await Promise.all([loadEntities(), loadRelations()]);
+                    loadCleanupData();
+                } else {
+                    showToast('删除失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch(e) {
+                showToast('删除失败: ' + e.message, 'error');
+            }
+        }
+        // ========== 审核清理面板结束 ==========
 
         // 关系模态框操作
         function openAddRelationModal() {

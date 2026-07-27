@@ -641,6 +641,8 @@ HTML_TEMPLATE = """
         <div class="panel-header">
             <div class="panel-title">审核清理</div>
             <div style="display: flex; gap: 10px;">
+                <button class="btn btn-secondary" onclick="selectAllClean()" id="btn-select-all-clean" style="font-size: 13px;">全选当前</button>
+                <button class="btn btn-secondary" onclick="deselectAllClean()" id="btn-deselect-all" style="font-size: 13px;">取消全选</button>
                 <button class="btn btn-danger" onclick="batchDeleteCleanup()" id="btn-batch-delete" disabled>批量删除所选</button>
             </div>
         </div>
@@ -1229,6 +1231,29 @@ HTML_TEMPLATE = """
             } else {
                 visibleIds.forEach(id => cleanupSelected.delete(id));
             }
+            renderCleanupList();
+        }
+
+        function selectAllClean() {
+            const lenFilter = document.getElementById('filter-len').value;
+            const relFilter = document.getElementById('filter-rel').value;
+            const typeFilter = document.getElementById('filter-type').value;
+            const visibleIds = cleanupEntities.filter(e => {
+                const nlen = (e.name || '').length;
+                if (lenFilter === 'short' && nlen > 3) return false;
+                if (lenFilter === 'mid' && (nlen <= 3 || nlen > 80)) return false;
+                if (lenFilter === 'long' && nlen <= 80) return false;
+                if (relFilter === 'connected' && e._relCount === 0) return false;
+                if (relFilter === 'isolated' && e._relCount > 0) return false;
+                if (typeFilter !== 'all' && (e.type || '未分类') !== typeFilter) return false;
+                return true;
+            }).map(e => e.id);
+            visibleIds.forEach(id => cleanupSelected.add(id));
+            renderCleanupList();
+        }
+
+        function deselectAllClean() {
+            cleanupSelected.clear();
             renderCleanupList();
         }
 

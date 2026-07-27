@@ -1470,19 +1470,32 @@ if (data.relations.length === 0) {
             // 构建实体名称 set 用于过滤无效关系
             const entityNameSet = new Set(entities.map(e => e.name));
 
-            const links = relations.filter(r => {
-                // 过滤掉 source 或 target 不存在于实体列表中的关系
+            // 先过滤有效关系
+            const validRelations = relations.filter(r => {
                 const srcOk = r.source_name && entityNameSet.has(r.source_name);
                 const tgtOk = r.target_name && entityNameSet.has(r.target_name);
                 return srcOk && tgtOk;
-            }).map(r => ({
+            });
+
+            // 关系中的节点名集合
+            const linkedNodeNames = new Set();
+            validRelations.forEach(r => {
+                linkedNodeNames.add(r.source_name);
+                linkedNodeNames.add(r.target_name);
+            });
+
+            // 过滤节点：仅保留有关系的节点（避免孤立节点显示）
+            const filteredNodes = nodes.filter(n => linkedNodeNames.has(n.id));
+
+            // 构建最终的 links（用关系名做 source/target）
+            const links = validRelations.map(r => ({
                 source: r.source_name,
                 target: r.target_name,
                 name: r.rel_type,
                 lineStyle: { width: 2, curveness: 0.3 }
             }));
 
-            console.log('[graph] nodes:', nodes.length, 'links:', links.length);
+            console.log('[graph] nodes:', nodes.length, 'connected:', filteredNodes.length, 'links:', links.length);
             console.log('[graph] container size:', container.offsetWidth, 'x', container.offsetHeight);
 
             // 延迟初始化——等待面板 display:block 后浏览器 reflow
@@ -1529,7 +1542,7 @@ if (data.relations.length === 0) {
                     series: [{
                         type: 'graph',
                         layout: 'force',
-                        data: nodes,
+                        data: filteredNodes,
                         links: links,
                         categories: typeSet.map(function(t){ return { name: t }; }),
                         roam: true,
@@ -1567,8 +1580,8 @@ if (data.relations.length === 0) {
                     }
                 });
 
-                document.getElementById('graph-entity-count').textContent = entities.length;
-                document.getElementById('graph-relation-count').textContent = relations.length;
+                document.getElementById('graph-entity-count').textContent = filteredNodes.length;
+                document.getElementById('graph-relation-count').textContent = links.length;
             }, 100);
         }
 

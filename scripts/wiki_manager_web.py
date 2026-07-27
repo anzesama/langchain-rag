@@ -1849,13 +1849,62 @@ def api_entities():
     # GET 请求：获取实体列表
     conn = get_db_connection()
     try:
-        cursor = conn.execute('''
-            SELECT id, name, type, properties, source_chapter, status
-            FROM entities
-            ORDER BY id DESC
-            LIMIT 100
-        ''')
-        entities = [dict(row) for row in cursor.fetchall()]
+        query = request.args.get('query', '')  # 搜索关键词（可选）
+        entity_filter = request.args.get('entity_name', '')  # 单实体扩展模式
+        limit = request.args.get('limit', 500, type=int)
+
+        if query:
+            # 搜索模式
+            cursor = conn.execute('''
+                SELECT id, name, type, properties, source_chapter, status
+                FROM entities
+                WHERE name LIKE ? OR type LIKE ?
+                ORDER BY id DESC
+                LIMIT ?
+            ''', (f'%{query}%', f'%{query}%', limit))
+            entities = [dict(row) for row in cursor.fetchall()]
+        elif entity_filter:
+            # 按实体名扩展：返回与该实体有关系 + 附近节点
+            cursor = conn.execute('''
+                SELECT DISTINCT e.id, e.name, e.type, e.properties, e.source_chapter, e.status
+                FROM entities e
+                LEFT JOIN relationships r ON e.id = r.source_id OR e.id = r.target_id
+                LEFT JOIN entities se ON r.source_id = se.id
+                LEFT JOIN entities te ON r.target_id = te.id
+                WHERE se.name = ? OR te.name = ?
+                LIMIT ?
+            ''', (entity_filter, entity_filter, limit))
+            entities = [dict(row) for row in cursor.fetchall()]
+        else:
+            # 默认模式：优先显示有关系的实体（图谱有意义）
+            cursor = conn.execute('''
+                SELECT e.id, e.name, e.type, e.properties, e.source_chapter, e.status
+                FROM entities e
+                WHERE e.id IN (
+                    SELECT DISTINCT source_id FROM relationships
+                    UNION
+                    SELECT DISTINCT target_id FROM relationships
+                )
+                ORDER BY e.id DESC
+                LIMIT ?
+            ''', (limit,))
+            entities = [dict(row) for row in cursor.fetchall()]
+
+            # 不够限额时补充孤立的
+            if len(entities) < limit:
+                cursor2 = conn.execute('''
+                    SELECT e.id, e.name, e.type, e.properties, e.source_chapter, e.status
+                    FROM entities e
+                    WHERE e.id NOT IN (
+                        SELECT DISTINCT source_id FROM relationships
+                        UNION
+                        SELECT DISTINCT target_id FROM relationships
+                    )
+                    ORDER BY e.id DESC
+                    LIMIT ?
+                ''', (limit - len(entities),))
+                entities.extend([dict(row) for row in cursor2.fetchall()])
+
         return jsonify({"entities": entities})
     finally:
         conn.close()
@@ -1919,18 +1968,58 @@ def approve_relation(relation_id):
 
 @app.route('/api/relations', methods=['GET'])
 def get_relations():
-    """获取所有关系（限制100条）"""
+    """获取所有关系"""
     conn = get_db_connection()
     try:
-        cursor = conn.execute('''
-            SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
-                   src.name as source_name, tgt.name as target_name
-            FROM relationships r
-            LEFT JOIN entities src ON r.source_id = src.id
-            LEFT JOIN entities tgt ON r.target_id = tgt.id
-            ORDER BY r.id DESC
-            LIMIT 100
-        ''')
+        limit = request.args.get('limit', 500, type=int)  # 默认最多500条
+        entity_name = request.args.get('entity', '')
+        role = request.args.get('role', 'both')  # source / target / both
+
+        if entity_name:
+            # 按实体筛选
+            if role == 'source':
+                cursor = conn.execute('''
+                    SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
+                           src.name as source_name, tgt.name as target_name
+                    FROM relationships r
+                    LEFT JOIN entities src ON r.source_id = src.id
+                    LEFT JOIN entities tgt ON r.target_id = tgt.id
+                    WHERE src.name = ?
+                    ORDER BY r.id DESC
+                    LIMIT ?
+                ''', (entity_name, limit))
+            elif role == 'target':
+                cursor = conn.execute('''
+                    SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
+                           src.name as source_name, tgt.name as target_name
+                    FROM relationships r
+                    LEFT JOIN entities src ON r.source_id = src.id
+                    LEFT JOIN entities tgt ON r.target_id = tgt.id
+                    WHERE tgt.name = ?
+                    ORDER BY r.id DESC
+                    LIMIT ?
+                ''', (entity_name, limit))
+            else:
+                cursor = conn.execute('''
+                    SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
+                           src.name as source_name, tgt.name as target_name
+                    FROM relationships r
+                    LEFT JOIN entities src ON r.source_id = src.id
+                    LEFT JOIN entities tgt ON r.target_id = tgt.id
+                    WHERE src.name = ? OR tgt.name = ?
+                    ORDER BY r.id DESC
+                    LIMIT ?
+                ''', (entity_name, entity_name, limit))
+        else:
+            cursor = conn.execute('''
+                SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
+                       src.name as source_name, tgt.name as target_name
+                FROM relationships r
+                LEFT JOIN entities src ON r.source_id = src.id
+                LEFT JOIN entities tgt ON r.target_id = tgt.id
+                ORDER BY r.id DESC
+                LIMIT ?
+            ''', (limit,))
         relations = [dict(row) for row in cursor.fetchall()]
         return jsonify({"relations": relations, "total": len(relations)})
     except Exception as e:

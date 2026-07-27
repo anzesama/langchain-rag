@@ -530,6 +530,7 @@ HTML_TEMPLATE = """
             <button class="nav-tab active" data-panel="graph">知识图谱</button>
             <button class="nav-tab" data-panel="llm">LLM 辅助判断</button>
             <button class="nav-tab" data-panel="search">知识库搜索</button>
+            <button class="nav-tab" data-panel="graph-search">图搜索</button>
             <button class="nav-tab" data-panel="cleanup">审核清理</button>
         </div>
 
@@ -687,6 +688,35 @@ HTML_TEMPLATE = """
                 </thead>
                 <tbody id="cleanup-tbody"></tbody>
             </table>
+        </div>
+    </div>
+
+    <!-- 图搜索面板 -->
+    <div class="panel" id="panel-graph-search" style="display: none;">
+        <div class="panel-header">
+            <div class="panel-title">&#x1f50d; 图搜索</div>
+            <div style="display: flex; gap: 8px; flex: 1;">
+                <input type="text" id="gs-input" placeholder="输入关键词搜索知识图谱..." 
+                       style="flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px;"
+                       onkeydown="if(event.key==='Enter') graphSearch()">
+                <button class="btn btn-primary" onclick="graphSearch()">搜索</button>
+                <button class="btn btn-secondary" onclick="clearGraphSearch()">清空</button>
+            </div>
+        </div>
+
+        <div style="display: flex; gap: 16px;">
+            <div style="flex: 1; min-width: 0;">
+                <div id="graph-search-chart" style="height: 500px; border: 1px solid #eee; border-radius: 4px;"></div>
+                <div style="margin-top: 8px; padding: 8px; background: #f5f5f5; border-radius: 4px; font-size: 12px; color: #333;">
+                    <span id="gs-stats">未搜索</span>
+                    <span style="float: right; color: #999;">点击节点展开更多关联</span>
+                </div>
+            </div>
+
+            <div style="width: 350px; border: 1px solid #eee; border-radius: 4px; padding: 12px; overflow-y: auto; max-height: 570px;">
+                <div style="font-weight: bold; margin-bottom: 8px;">关联事实</div>
+                <div id="gs-fact-list" style="font-size: 13px; color: #666;">-- 输入关键词回车搜索 --</div>
+            </div>
         </div>
     </div>
 

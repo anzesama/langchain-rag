@@ -2667,6 +2667,54 @@ def llm_review_entities():
     return jsonify({"success": True, "result": result})
 
 
+# ==================== 知识图谱搜索 ====================
+
+@app.route('/api/graph', methods=['POST'])
+def graph_search():
+    """图搜索（向量召回 + 1-hop 扩展）"""
+    try:
+        data = request.json
+        query = data.get('query', '').strip()
+        top_k = data.get('top_k', 10)
+
+        if not query:
+            return jsonify({"success": False, "error": "搜索关键词不能为空"})
+
+        from rag_core.graph_retriever.retriever import retrieve
+
+        result = retrieve(query, top_k=top_k, hops=1)
+
+        nodes = {}
+        edges = []
+
+        for rel in result.get('seed_relations', []):
+            s, t = rel['source'], rel['target']
+            nodes[s] = {'name': s, 'type': '', 'is_seed': True}
+            nodes[t] = {'name': t, 'type': '', 'is_seed': True}
+
+        for rel in result.get('expanded_edges', []):
+            s, t = rel['source'], rel['target']
+            nodes[s] = nodes.get(s, {'name': s, 'type': '', 'is_seed': False})
+            nodes[t] = nodes.get(t, {'name': t, 'type': '', 'is_seed': False})
+            edges.append({
+                'source': s,
+                'target': t,
+                'rel_type': rel.get('rel_type', '关联'),
+            })
+
+        return jsonify({
+            "success": True,
+            "query": query,
+            "nodes": list(nodes.values()),
+            "edges": edges,
+            "fact_list": result.get('fact_list', [])
+        })
+
+    except Exception as e:
+        logger.exception("图搜索失败")
+        return jsonify({"success": False, "error": str(e)})
+
+
 # ==================== 知识库搜索 ====================
 
 @app.route('/api/search', methods=['POST'])

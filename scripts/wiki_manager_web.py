@@ -1732,6 +1732,192 @@ if (data.relations.length === 0) {
 
         // End 知识库搜索
 
+        // ================== 图搜索 ==================
+        let gsChart = null;
+        let gsNodes = [];
+        let gsEdges = [];
+        let gsFactList = [];
+
+        async function graphSearch() {
+            var query = document.getElementById('gs-input').value.trim();
+            if (!query) return;
+
+            document.getElementById('gs-stats').textContent = '搜索中...';
+            document.getElementById('gs-fact-list').innerHTML = '<div style="color: #999;">加载中...</div>';
+
+            try {
+                var resp = await fetch('/api/graph', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({query: query, top_k: 10})
+                });
+                var data = await resp.json();
+                if (!data.success) {
+                    document.getElementById('gs-stats').textContent = '搜索失败: ' + (data.error || '未知错误');
+                    return;
+                }
+
+                gsNodes = data.nodes || [];
+                gsEdges = data.edges || [];
+                gsFactList = data.fact_list || [];
+
+                var seedCount = gsNodes.filter(function(n){return n.is_seed}).length;
+                document.getElementById('gs-stats').textContent =
+                    '节点 ' + gsNodes.length + ' | 关系 ' + gsEdges.length + ' | 种子 ' + seedCount;
+
+                renderGraphSearch();
+                renderFactList();
+            } catch(e) {
+                document.getElementById('gs-stats').textContent = '请求失败: ' + e.message;
+            }
+        }
+
+        function renderGraphSearch() {
+            var container = document.getElementById('graph-search-chart');
+            if (!container || gsNodes.length === 0) return;
+
+            if (gsChart) { gsChart.dispose(); gsChart = null; }
+
+            // 类型分类
+            var types = [];
+            var typeIdx = {};
+            gsNodes.forEach(function(n) {
+                var t = n.type || '未知';
+                if (typeIdx[t] === undefined) {
+                    typeIdx[t] = types.length;
+                    types.push(t);
+                }
+            });
+
+            var nodes = gsNodes.map(function(n) {
+                return {
+                    id: n.name,
+                    name: n.name.length > 30 ? n.name.substring(0, 30) + '...' : n.name,
+                    category: typeIdx[n.type || '未知'] || 0,
+                    symbolSize: n.is_seed ? 45 : 30,
+                    itemStyle: {
+                        color: n.is_seed ? '#e53935' : 'hsl(' + ((typeIdx[n.type || '未知'] || 0) * 137.508 % 360) + ', 50%, 60%)'
+                    },
+                    _raw: n
+                };
+            });
+
+            var links = gsEdges.map(function(e) {
+                return {
+                    source: e.source,
+                    target: e.target,
+                    name: e.rel_type || '关联',
+                    lineStyle: { width: 2, curveness: 0.3 }
+                };
+            });
+
+            setTimeout(function() {
+                if (!container.offsetWidth) {
+                    console.log('[gs] container zero width, retrying...');
+                    setTimeout(function() { gsChart = echarts.init(container); gsChart.setOption(option); }, 200);
+                    return;
+                }
+                gsChart = echarts.init(container);
+
+                var option = {
+                    tooltip: {
+                        formatter: function(p) {
+                            if (p.dataType === 'node') return '<strong>' + escapeHtml(p.data._content.name) + '</strong>';
+                            return escapeHtml(p.data.source) + ' → ' + escapeHtml(p.data.target);
+                        }
+                    },
+                    legend: [{ data: types, orient: 'horizontal', top: 10, left: 'center' }],
+                    series: [{
+                        type: 'graph',
+                        layout: 'force',
+                        data: nodes,
+                        links: links,
+                        categories: types.map(function(t){return {name: t};}),
+                        roam: true,
+                        label: { show: true, position: 'right', fontSize: 11 },
+                        force: { repulsion: 300, edgeLength: [80, 200] },
+                        lineStyle: { color: '#999', width: 1.5, curveness: 0.3 },
+                        emphasis: { focus: 'adjacency', lineStyle: { width: 4 } }
+                    }]
+                };
+
+                gsChart.setOption(option);
+                gsChart.off('click');
+                gsChart.on('click', function(params) {
+                    if (params.dataType === 'node' && params.data._content) {
+                        expandNode(params.data._content.name);
+                    }
+                });
+            }, 50);
+        }
+
+        async function expandNode(nodeName) {
+            try {
+                var resp = await fetch('/api/graph', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({query: nodeName, top_k: 5})
+                });
+                var data = await resp.json();
+                if (!data.success || !data.nodes) {
+                    showToast('该实体无更多关联', 'info');
+                    return;
+                }
+
+                var existNames = {};
+                gsNodes.forEach(function(n) { existNames[n.name] = true; });
+
+                var addedNodes = 0;
+                data.nodes.forEach(function(n) {
+                    if (!existNames[n.name]) {
+                        gsNodes.push(n);
+                        existNames[n.name] = true;
+                        addedNodes++;
+                    }
+                });
+                data.edges.forEach(function(e) {
+                    gsEdges.push(e);
+                });
+                data.fact_list.forEach(function(f) {
+                    if (gsFactList.indexOf(f) === -1) gsFactList.push(f);
+                });
+
+                document.getElementById('gs-stats').textContent =
+                    '节点 ' + gsNodes.length + ' | 关系 ' + gsEdges.length + ' | +' + addedNodes + ' 新节点';
+                renderGraphSearch();
+                renderFactList();
+            } catch(e) {
+                showToast('展开失败: ' + e.message, 'error');
+            }
+        }
+
+        function renderFactList() {
+            var el = document.getElementById('gs-fact-list');
+            if (gsFactList.length === 0) {
+                el.innerHTML = '<div style="color: #999; padding: 10px;">无关联事实</div>';
+                return;
+            }
+            var html = '';
+            gsFactList.forEach(function(f) {
+                html += '<div style="padding: 4px 0; border-bottom: 1px solid #eee;">' +
+                        '<span style="color: #333;">' + escapeHtml(f) + '</span></div>';
+            });
+            el.innerHTML = html;
+        }
+
+        function clearGraphSearch() {
+            document.getElementById('gs-input').value = '';
+            gsNodes = [];
+            gsEdges = [];
+            gsFactList = [];
+            if (gsChart) { gsChart.dispose(); gsChart = null; }
+            var c = document.getElementById('graph-search-chart');
+            if (c) c.innerHTML = '';
+            document.getElementById('gs-stats').textContent = '已清空';
+            document.getElementById('gs-fact-list').innerHTML = '-- 请输入关键词搜索 --';
+        }
+        // ================== 图搜索结束 ==================
+
         // 知识图谱可视化
         function loadGraph() {
             console.log('[graph] loadGraph called, entities=', entities.length, ' relations=', relations.length);

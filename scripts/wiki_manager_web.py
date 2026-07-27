@@ -856,6 +856,11 @@ HTML_TEMPLATE = """
             if (panelName === 'cleanup') {
                 loadCleanupData();
             }
+            if (panelName === 'graph-search') {
+                setTimeout(function() {
+                    if (gsChart) gsChart.resize();
+                }, 100);
+            }
         }
 
         // ========== 初始化 ==========

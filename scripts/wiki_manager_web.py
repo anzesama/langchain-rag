@@ -1104,21 +1104,22 @@ HTML_TEMPLATE = """
         // ========== 审核清理面板 ==========
         async function loadCleanupData() {
             try {
-                // 使用页面已加载的实体和关系（避免重复请求失败）
-                if (!entities || entities.length === 0) {
-                    const entResp = await fetch('/api/entities?connected_only=false&limit=5000');
-                    const entData = await entResp.json();
-                    entities = entData.entities;
-                }
-                if (!relations || relations.length === 0) {
-                    const relResp = await fetch('/api/relations?limit=5000');
-                    const relData = await relResp.json();
-                    relations = relData.relations;
-                }
+                // 强制加载全量数据（图表面板可能只加载了部分）
+                const entResp = await fetch('/api/entities?connected_only=false&limit=10000');
+                const entData = await entResp.json();
+                const allEntities = entData.entities;
+
+                const relResp = await fetch('/api/relations?limit=10000');
+                const relData = await relResp.json();
+                const allRelations = relData.relations;
+
+                // 同步全局变量
+                entities = allEntities;
+                relations = allRelations;
 
                 // 计算每个实体的关系数
                 const relCountMap = {};
-                relations.forEach(r => {
+                allRelations.forEach(r => {
                     if (r.source_name) { relCountMap[r.source_name] = (relCountMap[r.source_name] || 0) + 1; }
                     if (r.target_name) { relCountMap[r.target_name] = (relCountMap[r.target_name] || 0) + 1; }
                 });

@@ -44,6 +44,7 @@ sys.path.insert(0, str(project_root))
 
 from flask import Flask, render_template_string, request, jsonify
 from rag_core.wiki_db import WikiDB, get_wiki_db
+from rag_core.llm_refiner import LLMRefiner
 from rag_config import AGNES_API_KEY, AGNES_API_BASE, BASE_DIR
 
 # 延迟导入 KnowledgeBase，避免启动时初始化
@@ -3031,6 +3032,130 @@ def search_knowledge():
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)})
 
+
+# ==================== LLM 精筛 & 关系提取 API ====================
+
+@app.route('/api/sources')
+def list_sources():
+    """返回所有已导入文档的来源列表"""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT source FROM chunks ORDER BY source"
+        ).fetchall()
+        sources = [row['source'] for row in rows]
+        return jsonify({"success": True, "sources": sources})
+    finally:
+        conn.close()
+
+
+@app.route('/api/llm/refine-entities', methods=['POST'])
+def refine_entities():
+    """LLM 精筛指定来源文件的实体"""
+    data = request.json
+    source = data.get('source', '').strip()
+    if not source:
+        return jsonify({"success": False, "error": "缺少 source 参数"})
+
+    conn = get_db_connection()
+    try:
+        # 获取来源相关的实体
+        entity_rows = conn.execute(
+            'SELECT id, name, type, properties FROM entities WHERE source_chapter = ?',
+            (source,)
+        ).fetchall()
+        entities = [dict(row) for row in entity_rows]
+        if not entities:
+            return jsonify({"success": False, "error": f"source '{source}' 无相关实体"})
+
+        # 获取 chunks 上下文
+        chunk_rows = conn.execute(
+            'SELECT id, content as chunk_text FROM chunks WHERE source = ? LIMIT 20',
+            (source,)
+        ).fetchall()
+        chunks = [dict(row) for row in chunk_rows]
+    finally:
+        conn.close()
+
+    # 调 LLM 精筛
+    settings = get_llm_settings()
+    refiner = LLMRefiner(
+        endpoint=settings.get('llm_endpoint', AGNES_API_BASE),
+        api_key=settings.get('llm_api_key', AGNES_API_KEY),
+        model=settings.get('llm_model', 'agnes-2.0-flash'),
+        domain=settings.get('domain_type', 'machine-learning'),
+    )
+    result = refiner.refine_entities(entities, chunks)
+    return jsonify({"success": True, "result": result})
+
+
+@app.route('/api/llm/extract-relations', methods=['POST'])
+def extract_relations():
+    """LLM 从文本中提取实体间关系"""
+    data = request.json
+    source = data.get('source', '').strip()
+    if not source:
+        return jsonify({"success": False, "error": "缺少 source 参数"})
+
+    conn = get_db_connection()
+    try:
+        entity_rows = conn.execute(
+            'SELECT id, name, type FROM entities WHERE source_chapter = ?',
+            (source,)
+        ).fetchall()
+        entities = [dict(row) for row in entity_rows]
+
+        chunk_rows = conn.execute(
+            'SELECT id, content as chunk_text FROM chunks WHERE source = ?',
+            (source,)
+        ).fetchall()
+        chunks = [dict(row) for row in chunk_rows]
+    finally:
+        conn.close()
+
+    if not entities or not chunks:
+        return jsonify({"success": False, "error": f"source '{source}' 无实体或无chunk"})
+
+    settings = get_llm_settings()
+    refiner = LLMRefiner(
+        endpoint=settings.get('llm_endpoint', AGNES_API_BASE),
+        api_key=settings.get('llm_api_key', AGNES_API_KEY),
+        model=settings.get('llm_model', 'agnes-2.0-flash'),
+        domain=settings.get('domain_type', 'machine-learning'),
+    )
+    rels = refiner.extract_relations(chunks, entities)
+    return jsonify({"success": True, "relations": rels.get('relations', []), "count": rels.get('count', 0)})
+
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings_api():
+    """获取当前 LLM 配置"""
+    settings = get_llm_settings()
+    return jsonify({"success": True, "settings": settings})
+
+
+@app.route('/api/settings/update', methods=['POST'])
+def update_settings():
+    """更新 LLM 配置"""
+    data = request.json
+    updates = data.get('settings', {})
+    if not updates:
+        return jsonify({"success": False, "error": "缺少 settings 字段"})
+
+    conn = get_db_connection()
+    try:
+        for key, value in updates.items():
+            conn.execute(
+                'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+                (key, value)
+            )
+        conn.commit()
+        return jsonify({"success": True, "updated": list(updates.keys())})
+    finally:
+        conn.close()
+
+
+# ==================== 启动 ====================
 
 if __name__ == '__main__':
     import logging

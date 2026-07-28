@@ -73,7 +73,7 @@ class LLMExtractor:
 
     def _llm_extract(self, text: str) -> Dict[str, Any]:
         """
-        调用 Agnes API 提取实体和关系
+        调用 Agnes API 提取实体和关系 (v2 — 强化版 Prompt + 后端质量过滤)
 
         Args:
             text: 文本内容
@@ -87,28 +87,34 @@ class LLMExtractor:
         if not text or not text.strip():
             return {'entities': [], 'relations': []}
 
-        prompt = f"""你是一个知识图谱实体提取专家。请从以下文本中提取关键实体和关系。
+        prompt = f"""你是知识图谱构建专家。从以下文本中提取**独立的、命名实体**和**实体间的关系**。
 
-要求：
-1. 实体类型自由发挥，常见：概念、方法、算法、工具、框架、人物、数据集、评估指标、论文、模型
-2. 提取完整的、独立的命名实体，不要提取不完整的字符片段
-3. 每个实体含：name(中/英均可), type(自定义), description(一句话)
+## 实体规则（严格）
+1. 实体名必须是名词或固定术语，长度限制 2-20 个字符
+2. 禁止单字、禁止超过 20 字的超长实体
+3. 禁止填入完整句子或句子片段（如"我们使用交叉验证方法"），只能填入"交叉验证"
+4. 类型必须是严格的知识点类型：概念、方法、算法、工具、框架、模型、数据集、指标、技术、库、函数
+5. 只提取真正独特的、有信息量、可检索的知识点 — 不要提取泛化的描述
 
-4. 提取实体间明确存在的关系，关系类型自由发挥，常见：包含、使用、改进、基于、属于、对比、实现
+## 关系规则（严格）
+1. 只提取在这段文本中明确出现的实体之间的肯定关系
+2. 不要猜测或臆测关系
+3. 关系类型：定义、扩展、使用、基于、对比、包含、实现、改进、防止、优化
 
-请以严格JSON格式返回：
+## 格式（严格JSON）
 {{
   "entities": [
-    {{"name": "交叉验证", "type": "方法", "description": "将数据集分为K折,轮流作为训练集和验证集的方法"}}
+    {{"name": "交叉验证", "type": "方法", "description": "将数据集分为K折以验证模型泛化能力"}}
   ],
   "relations": [
-    {{"source": "交叉验证", "target": "过拟合", "type": "对抗", "description": "交叉验证用于检测和防止过拟合"}}
+    {{"source": "交叉验证", "target": "过拟合", "type": "防止", "description": "交叉验证防止模型对训练数据过拟合"}}
   ]
 }}
 
-文本：
+## 文本
 {text}
-"""
+
+只返回JSON，不添加任何解释。"""
 
         # 重试机制
         last_error = None
@@ -122,7 +128,7 @@ class LLMExtractor:
                 payload = {
                     "model": self.model,
                     "messages": [
-                        {"role": "system", "content": "你是一个专业的知识图谱实体提取专家，只返回JSON格式结果，不要包含任何解释文字。"},
+                        {"role": "system", "content": "你是知识图谱实体提取专家，只返回JSON结果，不包含任何解释文字。实体名必须是2-20字的命名术语，不能是描述句。"},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.1,
@@ -137,7 +143,6 @@ class LLMExtractor:
                 )
 
                 if response.status_code == 429:
-                    # 限流，等待后重试
                     wait_time = self.retry_delay * (attempt + 1)
                     logger.warning(f"Agnes API 429 rate limit, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries})")
                     import time
@@ -160,7 +165,64 @@ class LLMExtractor:
                     content = content[:-3]
 
                 result = json.loads(content)
-                return result
+
+                # ====== 后端质量过滤 ======
+                valid_entities = []
+                valid_names = set()
+
+                # 英文常见弱词黑名单
+                WEAK_EN_WORDS = {
+                    'the','a','an','is','it','we','he','she','they',
+                    'and','or','not','but','for','with','from','into',
+                    'onto','up','down','out','in','on','at','by','to',
+                    'of','no','yes','has','had','are','was','were',
+                    'be','been','can','may','if','then','else','when',
+                    'who','why','how','also','only','just','so','very',
+                    'this','that','these','those','all','some','any',
+                    'each','every','other','more','less','much','many',
+                    'would','should','could','will','shall','must',
+                    'about','already','again','almost','always','never',
+                    'there','here','often','its','now','too','well',
+                    'my','your','his','her','our','their','my','mine',
+                    'data','text','code','file','time','value','size',
+                    'name','user','type','key','list','item','test',
+                    'base','temp','home','case','day','end','set',
+                }
+
+                for e in result.get('entities', []):
+                    name = e.get('name', '').strip()
+                    # 长度过滤
+                    if len(name) < 2 or len(name) > 30:
+                        continue
+                    # 去重
+                    if name in valid_names:
+                        continue
+                    # 拒绝含中文标点的句子
+                    if re.search(r'[，。！？；]', name):
+                        continue
+                    # 拒绝以虚词开头
+                    if re.match(r'^[的也是在都就而及与或]', name):
+                        continue
+                    # 拒绝数字/日期开头
+                    if re.match(r'^\d', name):
+                        continue
+                    # 纯英文短词过滤
+                    if name.isascii() and len(name) <= 4 and name.lower() in WEAK_EN_WORDS:
+                        continue
+
+                    valid_entities.append(e)
+                    valid_names.add(name)
+
+                # 只保留 source/target 都在实体列表中的关系
+                valid_relations = []
+                for r in result.get('relations', []):
+                    src = r.get('source', '').strip()
+                    tgt = r.get('target', '').strip()
+                    if src in valid_names and tgt in valid_names:
+                        valid_relations.append(r)
+
+                logger.info(f"LLM提取: {len(valid_entities)}个有效实体, {len(valid_relations)}条有效关系 (原始: {len(result.get('entities',[]))}实体/{len(result.get('relations',[]))}关系)")
+                return {'entities': valid_entities, 'relations': valid_relations}
 
             except requests.exceptions.Timeout:
                 last_error = "timeout"
@@ -190,8 +252,6 @@ class LLMExtractor:
         logger.warning(f"Agnes API failed after {self.max_retries} retries: {last_error}")
         return {'entities': [], 'relations': []}
 
-    def _regex_extract(self, text: str) -> Dict[str, Any]:
-        """
         正则提取实体和关系
 
         保留 wiki_updater.py 中的原有模式，但移除蛊真人专用内容

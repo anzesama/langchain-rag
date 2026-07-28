@@ -22,14 +22,19 @@ HNSW_PARAMS = {
 from rag_core.embedding_service import get_embeddings
 
 
-class _EmbeddingWrapper:
-    """包装 get_embeddings 函数以适配 LangChain 接口"""
-    
+from chromadb import Documents, EmbeddingFunction, Embeddings
+
+class _EmbeddingWrapper(EmbeddingFunction):
+    """包装 get_embeddings 以适配 ChromaDB 5.x (__call__) 和 LangChain (embed_documents/embed_query)"""
+
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         return get_embeddings(texts)
-    
+
     def embed_query(self, text: str) -> List[float]:
         return get_embeddings([text])[0]
+
+    def __call__(self, input: Documents) -> Embeddings:
+        return get_embeddings(input)
 
 
 class VectorStoreManager:

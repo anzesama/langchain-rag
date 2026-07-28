@@ -3089,7 +3089,7 @@ def refine_entities():
 
         # 获取 chunks 上下文
         chunk_rows = conn.execute(
-            'SELECT id, content as chunk_text FROM chunks WHERE source = ? LIMIT 20',
+            'SELECT chunk_id, text_content as chunk_text FROM chunks WHERE source = ? LIMIT 20',
             (source,)
         ).fetchall()
         chunks = [dict(row) for row in chunk_rows]
@@ -3125,7 +3125,7 @@ def extract_relations():
         entities = [dict(row) for row in entity_rows]
 
         chunk_rows = conn.execute(
-            'SELECT id, content as chunk_text FROM chunks WHERE source = ?',
+            'SELECT chunk_id, text_content as chunk_text FROM chunks WHERE source = ?',
             (source,)
         ).fetchall()
         chunks = [dict(row) for row in chunk_rows]

@@ -74,16 +74,49 @@ def get_db_connection():
 
 
 def ensure_db_schema():
-    """确保 entities 表有 status 字段"""
+    """确保数据库结构正确 — entities 状态字段 + settings 表"""
     conn = get_db_connection()
     try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         cursor = conn.execute("PRAGMA table_info(entities)")
         columns = [row['name'] for row in cursor.fetchall()]
         if 'status' not in columns:
             conn.execute("ALTER TABLE entities ADD COLUMN status TEXT DEFAULT 'pending'")
             conn.execute("ALTER TABLE relationships ADD COLUMN status TEXT DEFAULT 'pending'")
-            conn.commit()
-            logger.info("已添加 status 字段到 entities 和 relationships 表")
+        
+        # 插入默认 LLM 配置（不存在时）
+        defaults = {
+            'llm_endpoint': AGNES_API_BASE,
+            'llm_api_key': AGNES_API_KEY or '',
+            'llm_model': 'agnes-2.0-flash',
+            'domain_type': 'machine-learning',
+            'llm_max_tokens': '3000',
+            'llm_temperature': '0.1',
+        }
+        for key, val in defaults.items():
+            conn.execute(
+                'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)',
+                (key, val)
+            )
+        conn.commit()
+        logger.info("DB schema updated — settings 表已就绪")
+    finally:
+        conn.close()
+
+
+def get_llm_settings():
+    """从 settings 表读取 LLM 配置"""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT key, value FROM settings WHERE key LIKE 'llm_%' OR key LIKE 'domain%'"
+        ).fetchall()
+        return {row['key']: row['value'] for row in rows}
     finally:
         conn.close()
 

@@ -51,6 +51,25 @@ class UnifiedImporter:
         if documents:
             self.vs.add_documents(documents)
             logger.info(f"  chunks: {len(documents)} 条入库")
+
+            # Sync LSH index
+            from rag_core.lsh_index import LSHIndexManager
+            from rag_config import LSH_DIM, LSH_NBITS
+            try:
+                if self.lsh is None:
+                    self.lsh = LSHIndexManager(dim=LSH_DIM, nbits=LSH_NBITS)
+                    self.lsh.load_index()
+                from rag_core.embedding_service import get_embeddings
+                import numpy as np
+                texts = [d.page_content for d in documents]
+                if texts:
+                    embs = np.array(get_embeddings(texts), dtype=np.float32)
+                    self.lsh.add_documents(documents, embs)
+                    self.lsh.save_index()
+                    logger.info(f"  LSH: {len(texts)} vectors indexed")
+            except Exception as e:
+                logger.warning(f"LSH sync failed (non-blocking): {e}")
+
         return documents
 
     def _import_entities_and_relations(self, text: str, source: str) -> dict:

@@ -122,23 +122,29 @@ def get_llm_settings():
 
 
 def call_llm(prompt: str, max_tokens: int = 2000) -> str:
-    """调用 Agnes API（或 OpenAI 兼容 API）"""
-    if not AGNES_API_KEY:
-        raise ValueError("AGNES_API_KEY 未设置")
+    """调用 LLM API（通过 settings 表读取配置）"""
+    settings = get_llm_settings()
+    api_key = settings.get('llm_api_key', AGNES_API_KEY or '')
+    if not api_key:
+        raise ValueError("LLM API Key 未在设置中配置")
 
-    base_url = AGNES_API_BASE.rstrip('/') + '/v1'
+    base_url = settings.get('llm_endpoint', AGNES_API_BASE).rstrip('/')
+    model = settings.get('llm_model', 'agnes-2.0-flash')
+    temp = float(settings.get('llm_temperature', '0.1'))
+    max_tok = int(settings.get('llm_max_tokens', str(max_tokens)))
+
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {AGNES_API_KEY}"
+        "Authorization": f"Bearer {api_key}"
     }
     data = {
-        "model": "agnes-2.0-flash",
+        "model": model,
         "messages": [
             {"role": "system", "content": "你是一个专业的知识图谱审核助手，只返回 JSON 格式的结果。"},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.1,
-        "max_tokens": max_tokens
+        "temperature": temp,
+        "max_tokens": max_tok
     }
 
     for attempt in range(3):

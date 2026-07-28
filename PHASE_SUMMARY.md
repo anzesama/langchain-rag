@@ -4,6 +4,58 @@
 
 ---
 
+# 阶段复盘：知识图谱修复 + 图搜索重构 + Canvas 可视化
+- 时间：2026-07-29 01:55
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- ECharts dataIndex bug 排查彻底：同一页面图搜索正常但知识图谱报错，定位为大数据量触发
+- 图搜索从向量库改为 SQL 直查，速度更快且不依赖向量库
+- Canvas 力导向布局自研，零外部依赖，200 帧动画
+- 知识库向量库成功导入 630 个 AAAMLP-CN chunks
+
+## 📝 实现内容
+
+### 1. ECharts 知识图谱 → Canvas 力导向
+- **问题**：ECharts 5.3.3/5.4.3 force layout 在知识图谱（57 节点 + 76 边）初始化报 `TypeError: Cannot set properties of undefined (setting 'dataIndex')`
+- **排查**：去掉 category、用名字字符串做 source/target、降级版本均无效
+- **关键发现**：图搜索（2-5 节点）用同一版本 ECharts 正常，大数据量关联
+- **方案**：Canvas 手写力导向，排斥力 + 弹簧力 + 中心引力 + 阻尼
+- **功能**：节点拖拽、悬停高亮、点击详情、PNG 导出
+
+### 2. 图搜索 /api/graph 重写
+- **原问题**：图搜索依赖向量库查找 seed 实体，但向量库存 chunks 而非关系
+- **方案**：retriever.py 纯 SQL 方案
+  - 实体名模糊匹配（完全匹配 > 包含匹配 > jieba 分词匹配）
+  - 关系索引 + BFS 扩展图
+  - 用名字字符串而非 entity_id(UUID) 查关系
+- **修复**：设置 `conn.row_factory = sqlite3.Row` 支持列名访问
+
+### 3. wiki_db_libsql.py 属性安全解析
+- `_safe_json_load()` 方法处理非 JSON 格式的 properties 字段
+- 纯文本 auto-wrapper 为 `{"text": value}`
+
+### 4. 向量库重建
+- 使用 `VectorStoreManager()` 直接导入 AAAMLP-CN 15 文件 630 chunks
+
+## 🐛 遇到的问题
+- **ECharts dataIndex bug**：5.3.3 和 5.4.3 在 knowledge graph 下均不可用
+- **SQLite Row 访问**：默认返回 tuple 需显式设 `row_factory = sqlite3.Row`
+- **retriever get_relations 传 UUID 非名称**：误传 entity_id(UUID) 造成空结果
+
+## 📦 产出物
+- `rag_core/graph_retriever/retriever.py` — 全面重写为纯 SQL
+- `rag_core/wiki_db_libsql.py` — `_safe_json_load()` 方法
+- `scripts/wiki_manager_web.py` — Canvas 力导向布局替代 ECharts
+- Git: `feature/llm-extraction`, commit `2326cdf`
+
+## ➡️ 下一步
+- 关系提取：jieba TF-IDF 基础上支持 LLM 精炼
+- 领域词表：补充更多专业术语关系
+- 审核面板：支持按类型筛选删除
+
+---
+
 # 阶段复盘：Web 功能扩展（知识图谱 + 图搜索 + 审核清理）
 - 时间：2026-07-28
 - 状态：✅ 完成

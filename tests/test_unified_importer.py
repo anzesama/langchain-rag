@@ -64,3 +64,20 @@ def test_import_chunks_overwrite():
     fragments2 = [Document(page_content="overwritten", metadata={"source": source})]
     importer._import_chunks(fragments2, source, overwrite=True)
     assert importer.vs.get_chunk_count(source) >= 1
+
+
+def test_import_entities_and_relations():
+    """Test ML text gets entities extracted (jieba only, no LLM API)"""
+    from rag_core.unified_importer import UnifiedImporter
+    importer = UnifiedImporter()
+    source = "_pytest_entity_import_test.md"
+    text = "欠拟合是机器学习中常见的一种现象。训练时如果模型太简单，会出现欠拟合。"
+    import os
+    os.environ['SKIP_LLM'] = '1'
+    try:
+        stats = importer._import_entities_and_relations(text, source)
+        assert isinstance(stats, dict)
+        assert 'entities_added' in stats
+        assert 'relations_added' in stats
+    finally:
+        os.environ.pop('SKIP_LLM', None)

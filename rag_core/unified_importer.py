@@ -53,6 +53,70 @@ class UnifiedImporter:
             logger.info(f"  chunks: {len(documents)} 条入库")
         return documents
 
+    def _import_entities_and_relations(self, text: str, source: str) -> dict:
+        """
+        从文本中提取实体和关系并写入 WikiDB
+
+        主路: jieba TF-IDF 实体提取
+        辅路: LLM 关系提取（通过 SKIP_LLM 环境变量控制，导入阶段默认关闭）
+
+        Returns:
+            {'entities_added': N, 'relations_added': M}
+        """
+        stats = {"entities_added": 0, "relations_added": 0}
+        if not text or not text.strip():
+            return stats
+
+        try:
+            from rag_core.llm_extractor import LLMExtractor
+            if self.extractor is None:
+                self.extractor = LLMExtractor()
+
+            result = self.extractor.extract_all(text, source)
+
+            # Write entities (jieba main + LLM supplement)
+            added_names = set()
+            for entity in result.get('entities', []):
+                name = entity.get('name', '').strip()
+                if not name or name in added_names:
+                    continue
+                etype = entity.get('type', '')
+                try:
+                    self.wiki_db.add_entity(name, etype, source_chapter=source)
+                except Exception:
+                    try:
+                        self.wiki_db.add_entity(name, etype, source_chapter=source)
+                    except Exception as e:
+                        logger.warning(f"add_entity retry failed: {name} {e}")
+                        continue
+                added_names.add(name)
+                stats['entities_added'] += 1
+
+            # Write relations
+            for rel in result.get('relations', []):
+                src = rel.get('source', '').strip()
+                tgt = rel.get('target', '').strip()
+                rtype = rel.get('type', rel.get('rel_type', '关联'))
+                if not src or not tgt:
+                    continue
+                try:
+                    self.wiki_db.add_relationship(src, tgt, rtype, source_chapter=source)
+                except Exception:
+                    try:
+                        self.wiki_db.add_relationship(src, tgt, rtype, source_chapter=source)
+                    except Exception as e:
+                        logger.warning(f"add_relationship failed: {src}->{tgt} {e}")
+                        continue
+                stats['relations_added'] += 1
+
+            logger.info(
+                f"  Jieba entities: {stats['entities_added']}, LLM relations: {stats['relations_added']}"
+            )
+        except Exception as e:
+            logger.error(f"Entity/Relation extraction error: {e}")
+
+        return stats
+
     def _is_already_imported(self, source: str) -> bool:
         """检查指定 source 是否已有导入记录"""
         return self.vs.get_chunk_count(source) > 0

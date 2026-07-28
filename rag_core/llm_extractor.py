@@ -3,6 +3,7 @@ import requests
 import logging
 from typing import List, Dict, Any
 from rag_config import AGNES_API_KEY, AGNES_API_BASE, LLM_MODEL, LLM_MAX_TOKENS
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,12 @@ class LLMExtractor:
                 jieba_names[e["name"]] = e
                 jieba_unique.append(e)
 
-        # 2. ===== LLM 提取（辅助：补充关系 + 关键实体）=----
-        llm_result = self._llm_extract(text)
+        # 2. ===== LLM 提取（辅助：补充关系 + 关键实体）=====
+        # 环境变量 SKIP_LLM 控制：导入时设为 1 避免高频 API 调用导致 429
+        if os.environ.get('SKIP_LLM', '0') == '1':
+            llm_result = {'entities': [], 'relations': []}
+        else:
+            llm_result = self._llm_extract(text)
 
         # 用 jieba 实体作为基准名集
         jieba_name_set = set(jieba_names.keys())

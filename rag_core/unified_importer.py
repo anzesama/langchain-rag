@@ -32,6 +32,27 @@ class UnifiedImporter:
         """为文件名生成唯一指纹（增量导入判断用）"""
         return hashlib.md5(filename.encode()).hexdigest()[:12]
 
+    def _import_chunks(self, documents, source: str, overwrite: bool = False):
+        """
+        将 Document 列表写入 libsql chunks 表
+
+        Args:
+            documents: Document 列表
+            source: 来源文件名
+            overwrite: True 时先删除已有同 source 的记录
+
+        Returns:
+            写入的 Document 列表
+        """
+        if overwrite:
+            deleted = self.vs.delete_by_source(source)
+            if deleted:
+                logger.info(f"  overwrite: 删除 {deleted} 个旧的 chunks (source={source})")
+        if documents:
+            self.vs.add_documents(documents)
+            logger.info(f"  chunks: {len(documents)} 条入库")
+        return documents
+
     def _is_already_imported(self, source: str) -> bool:
         """检查指定 source 是否已有导入记录"""
         return self.vs.get_chunk_count(source) > 0

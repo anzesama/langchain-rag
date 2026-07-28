@@ -33,3 +33,34 @@ def test_is_imported_false():
     from rag_core.unified_importer import UnifiedImporter
     importer = UnifiedImporter()
     assert importer._is_already_imported("nonexistent_file_xyz123.md") is False
+
+
+def test_import_chunks():
+    """Test that _import_chunks writes to libsql and returns Document list"""
+    from rag_core.unified_importer import UnifiedImporter
+    from langchain_core.documents import Document
+    importer = UnifiedImporter()
+    source = "_pytest_import_chunks_test.md"
+    # cleanup
+    importer.vs.delete_by_source(source)
+    fragments = [Document(page_content="test content for embedding chunk test", metadata={"source": source})]
+    result = importer._import_chunks(fragments, source, overwrite=False)
+    assert len(result) == 1
+    assert importer.vs.get_chunk_count(source) >= 1
+
+
+def test_import_chunks_overwrite():
+    """Test overwrite mode deletes old chunks first"""
+    from rag_core.unified_importer import UnifiedImporter
+    from langchain_core.documents import Document
+    importer = UnifiedImporter()
+    source = "_pytest_import_overwrite_test.md"
+    # cleanup
+    importer.vs.delete_by_source(source)
+    fragments1 = [Document(page_content="first import", metadata={"source": source})]
+    importer._import_chunks(fragments1, source, overwrite=False)
+    assert importer.vs.get_chunk_count(source) >= 1
+    # overwrite
+    fragments2 = [Document(page_content="overwritten", metadata={"source": source})]
+    importer._import_chunks(fragments2, source, overwrite=True)
+    assert importer.vs.get_chunk_count(source) >= 1

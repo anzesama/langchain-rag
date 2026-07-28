@@ -239,6 +239,7 @@ python scripts/rag_cli.py view
 | `add_documents.py` | 添加文档到知识库 | ⭐⭐⭐⭐⭐ |
 | `check_knowledge_base.py` | 检查知识库状态 | ⭐⭐⭐⭐⭐ |
 | `clean_then_reload.py` | 清理并重新加载知识库 | ⭐⭐⭐⭐ |
+| `import.py` | 统一文档导入（chunks+entities+relations） | ⭐⭐⭐⭐⭐ |
 | `import_novel_chapters.py` | 导入小说章节 | ⭐⭐⭐⭐⭐ |
 | `rag_cli.py` | RAG CLI 工具 | ⭐⭐⭐⭐⭐ |
 | `rag_server.py` | RAG 服务器 | ⭐⭐⭐⭐⭐ |

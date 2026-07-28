@@ -1920,216 +1920,185 @@ if (data.relations.length === 0) {
         }
         // ================== 图搜索结束 ==================
 
-        // 知识图谱可视化
-        function loadGraph() {
-            console.log('[graph] loadGraph called, entities=', entities.length, ' relations=', relations.length);
-            const container = document.getElementById('graph-chart');
-            if (!container) { console.error('[graph] container #graph-chart not found'); return; }
+        // ========== Canvas 力导向图谱 ==========
+        var graphCanvas = null, graphCtx = null;
+        var graphPositions = [];  // [{x, y, vx, vy, name, color, size, raw}]
+        var graphEdges = [];      // [{srcIdx, tgtIdx, name}]
+        var graphAnimId = null;
+        var graphHoveredIdx = -1;
 
-            if (graphCanvas) {
-                graphCanvas.remove();
-                graphCanvas = null; graphCtx = null; graphNodePositions = {};
-            }
-            // 清空容器
-            if (graphCanvas) { graphCanvas.remove(); graphCanvas = null; graphCtx = null; graphNodePositions = {}; }
+        function loadGraph() {
+            const container = document.getElementById('graph-chart');
+            if (!container) return;
+
+            if (graphAnimId) { cancelAnimationFrame(graphAnimId); graphAnimId = null; }
+            if (graphCanvas) { graphCanvas.remove(); graphCanvas = null; graphCtx = null; }
             container.innerHTML = '';
 
-            // 准备数据
-            const typeSet = [...new Set(entities.map(e => e.type || '未分类'))];
-            const typeMap = {};
-            typeSet.forEach((t, i) => { typeMap[t] = i; });
-
-            const nodes = entities.map(e => ({
-                id: e.name || 'unknown',
-                name: e.name || '未知',
-                category: typeMap[e.type || '未分类'] || 0,
-                symbolSize: Math.max(30, Math.min(80, 25 + (e.name || '').length * 6)),
-                itemStyle: {
-                    color: 'hsl(' + ((typeMap[e.type || '未分类'] || 0) * 137.508 % 360) + ', 70%, 60%)'
-                },
-                _raw: e
-            }));
-
-            // 构建实体名称 set 用于过滤无效关系
+            // 数据准备
             const entityNameSet = new Set(entities.map(e => e.name));
+            const validRels = relations.filter(r => r.source_name && entityNameSet.has(r.source_name) && r.target_name && entityNameSet.has(r.target_name));
+            const linkedNames = new Set(); validRels.forEach(r => { linkedNames.add(r.source_name); linkedNames.add(r.target_name); });
+            const filtered = entities.filter(e => linkedNames.has(e.name));
 
-            // 先过滤有效关系
-            const validRelations = relations.filter(r => {
-                const srcOk = r.source_name && entityNameSet.has(r.source_name);
-                const tgtOk = r.target_name && entityNameSet.has(r.target_name);
-                return srcOk && tgtOk;
-            });
+            const W = container.offsetWidth || 728, H = container.offsetHeight || 600;
 
-            // 关系中的节点名集合
-            const linkedNodeNames = new Set();
-            validRelations.forEach(r => {
-                linkedNodeNames.add(r.source_name);
-                linkedNodeNames.add(r.target_name);
-            });
-
-            // 过滤节点：仅保留有关系的节点，同时移除 category（避免 ECharts dataIndex bug）
-            const filteredNodes = nodes.filter(n => linkedNodeNames.has(n.id)).map(function(n) {
-                var clean = { id: n.id, name: n.name, symbolSize: n.symbolSize, itemStyle: n.itemStyle, _raw: n._raw };
-                return clean;
-            });
-
-            // links 用名字字符串做 source/target（回退到 2f3c580 的稳定方案）
-            const links = validRelations.map(function(r) {
+            // 节点位置
+            graphPositions = filtered.map(function(e, i) {
                 return {
-                    source: r.source_name,
-                    target: r.target_name,
-                    name: r.rel_type,
-                    lineStyle: { width: 2, curveness: 0.3 }
+                    x: W/2 + (Math.random()-0.5)*200, y: H/2 + (Math.random()-0.5)*200,
+                    vx: 0, vy: 0,
+                    name: e.name,
+                    size: Math.max(18, Math.min(50, 18 + e.name.length * 4)),
+                    color: 'hsl(' + ((i * 137.508) % 360) + ', 60%, 55%)',
+                    raw: e
                 };
             });
 
-            console.log('[graph] nodes:', nodes.length, 'connected:', filteredNodes.length, 'links:', links.length);
-            console.log('[graph] container size:', container.offsetWidth, 'x', container.offsetHeight);
-
-            // 延迟初始化 — 使用 Canvas 手动渲染（绕过ECharts bug）
-            setTimeout(function() {
-                renderGraphCanvas(filteredNodes, links, container);
-                document.getElementById('graph-entity-count').textContent = filteredNodes.length;
-                document.getElementById('graph-relation-count').textContent = links.length;
-            }, 100);
-        }
-
-        // ========== Canvas 知识图谱渲染器 ==========
-        var graphCanvas = null, graphCtx = null;
-        var graphNodePositions = {};  // name -> {x, y}
-        var graphDragNode = null;
-        var graphLinks = [];  // 当前渲染的关系数据
-
-        function renderGraphCanvas(nodes, links, container) {
-            graphLinks = links;
-            var W = container.offsetWidth || 728;
-            var H = container.offsetHeight || 600;
-
-            // 创建/复用 canvas
-            if (!graphCanvas) {
-                graphCanvas = document.createElement('canvas');
-                graphCanvas.width = W;
-                graphCanvas.height = H;
-                graphCanvas.style.width = W + 'px';
-                graphCanvas.style.height = H + 'px';
-                graphCanvas.style.cursor = 'grab';
-                container.appendChild(graphCanvas);
-                graphCtx = graphCanvas.getContext('2d');
-            } else {
-                graphCanvas.width = W;
-                graphCanvas.height = H;
-                graphCanvas.style.width = W + 'px';
-                graphCanvas.style.height = H + 'px';
-            }
-
-            // 为每个节点初始化位置（圆形布局 + 小随机扰动）
-            var cx = W / 2, cy = H / 2, radius = Math.min(W, H) * 0.38;
-            graphNodePositions = {};
-            nodes.forEach(function(n, i) {
-                var angle = (i / nodes.length) * 2 * Math.PI;
-                graphNodePositions[n.name] = {
-                    x: cx + Math.cos(angle) * radius + (Math.random() - 0.5) * 60,
-                    y: cy + Math.sin(angle) * radius + (Math.random() - 0.5) * 60,
-                    color: n.itemStyle ? n.itemStyle.color : '#4A90D9',
-                    size: n.symbolSize || 30,
-                    raw: n._raw || {}
-                };
+            // 边索引
+            var nameIdx = {};
+            filtered.forEach((e, i) => nameIdx[e.name] = i);
+            graphEdges = [];
+            validRels.forEach(r => {
+                var si = nameIdx[r.source_name], ti = nameIdx[r.target_name];
+                if (si !== undefined && ti !== undefined && si !== ti) graphEdges.push({srcIdx: si, tgtIdx: ti, name: r.rel_type});
             });
 
-            // 绘制
-            drawGraph();
+            // 创建 Canvas
+            graphCanvas = document.createElement('canvas');
+            graphCanvas.width = W; graphCanvas.height = H;
+            graphCanvas.style.width = W + 'px'; graphCanvas.style.height = H + 'px';
+            graphCanvas.style.cursor = 'grab';
+            container.appendChild(graphCanvas);
+            graphCtx = graphCanvas.getContext('2d');
 
-            // 鼠标事件
-            graphCanvas.onmousedown = function(e) {
-                var rect = graphCanvas.getBoundingClientRect();
-                var mx = e.clientX - rect.left, my = e.clientY - rect.top;
-                for (var name in graphNodePositions) {
-                    var p = graphNodePositions[name];
-                    var dx = mx - p.x, dy = my - p.y;
-                    if (dx * dx + dy * dy < (p.size / 2 + 5) * (p.size / 2 + 5)) {
-                        graphDragNode = name;
-                        graphCanvas.style.cursor = 'grabbing';
-                        return;
+            // 力导布局
+            var iter = 0;
+            function step() {
+                var k = 0.08, damp = 0.9, centerX = W/2, centerY = H/2;
+                for (var i = 0; i < graphPositions.length; i++) {
+                    var pi = graphPositions[i];
+                    pi.vx += (centerX - pi.x) * 0.001;
+                    pi.vy += (centerY - pi.y) * 0.001;
+                    // 排斥
+                    for (var j = i+1; j < graphPositions.length; j++) {
+                        var pj = graphPositions[j];
+                        var dx = pi.x - pj.x, dy = pi.y - pj.y;
+                        var dist = Math.max(Math.sqrt(dx*dx+dy*dy), 1);
+                        var force = 150 / (dist*dist);
+                        pi.vx += dx/dist * force;
+                        pi.vy += dy/dist * force;
+                        pj.vx -= dx/dist * force;
+                        pj.vy -= dy/dist * force;
                     }
+                }
+                // 弹力
+                graphEdges.forEach(e => {
+                    var s = graphPositions[e.srcIdx], t = graphPositions[e.tgtIdx];
+                    var dx = t.x - s.x, dy = t.y - s.y, d = Math.sqrt(dx*dx+dy*dy) || 1;
+                    var f = (d - 80) * 0.01;
+                    s.vx += dx/d * f; s.vy += dy/d * f;
+                    t.vx -= dx/d * f; t.vy -= dy/d * f;
+                });
+                // 应用
+                graphPositions.forEach(p => {
+                    p.vx *= damp; p.vy *= damp;
+                    p.x += p.vx; p.y += p.vy;
+                    p.x = Math.max(p.size, Math.min(W-p.size, p.x));
+                    p.y = Math.max(p.size, Math.min(H-p.size, p.y));
+                });
+                iter++;
+                drawGraph();
+                if (iter < 200) graphAnimId = requestAnimationFrame(step);
+            }
+            drawGraph();
+            step();
+
+            // 统计
+            document.getElementById('graph-entity-count').textContent = filtered.length;
+            document.getElementById('graph-relation-count').textContent = graphEdges.length;
+
+            // 鼠标交互
+            var dragIdx = -1;
+            graphHoveredIdx = -1;
+            graphCanvas.onmousedown = function(e) {
+                var mx = e.offsetX, my = e.offsetY;
+                for (var i = graphPositions.length-1; i >= 0; i--) {
+                    var p = graphPositions[i];
+                    var dx = mx - p.x, dy = my - p.y;
+                    if (dx*dx+dy*dy < p.size*p.size/4+25) { dragIdx = i; graphCanvas.style.cursor = 'grabbing'; break; }
                 }
             };
             graphCanvas.onmousemove = function(e) {
-                if (!graphDragNode) return;
-                var rect = graphCanvas.getBoundingClientRect();
-                var p = graphNodePositions[graphDragNode];
-                p.x = e.clientX - rect.left;
-                p.y = e.clientY - rect.top;
-                drawGraph();
+                if (dragIdx >= 0) {
+                    graphPositions[dragIdx].x = e.offsetX;
+                    graphPositions[dragIdx].y = e.offsetY;
+                    graphPositions[dragIdx].vx = 0;
+                    graphPositions[dragIdx].vy = 0;
+                    drawGraph();
+                    return;
+                }
+                var mx = e.offsetX, my = e.offsetY, h = -1;
+                for (var i = graphPositions.length-1; i >= 0; i--) {
+                    var dx = mx - graphPositions[i].x, dy = my - graphPositions[i].y;
+                    if (dx*dx+dy*dy < graphPositions[i].size*graphPositions[i].size/4) { h = i; break; }
+                }
+                if (graphHoveredIdx !== h) { graphHoveredIdx = h; graphCanvas.style.cursor = h >= 0 ? 'pointer' : 'grab'; drawGraph(); }
             };
             graphCanvas.onmouseup = function(e) {
-                if (graphDragNode) {
-                    var p = graphNodePositions[graphDragNode];
-                    // 点击 = 短暂拖拽（<3px），打开详情
-                    var dx = p.x - (e.clientX - graphCanvas.getBoundingClientRect().left);
-                    var dy = p.y - (e.clientY - graphCanvas.getBoundingClientRect().top);
-                    if (Math.abs(dx) < 3 && Math.abs(dy) < 3) {
-                        var raw = graphNodePositions[graphDragNode].raw;
-                        if (raw && raw.id) showEntityDetail(raw);
-                    }
-                    graphDragNode = null;
-                    graphCanvas.style.cursor = 'grab';
+                if (dragIdx >= 0) {
+                    var p = graphPositions[dragIdx];
+                    var dx = p.x - (e.offsetX || p.x), dy = p.y - (e.offsetY || p.y);
+                    if (Math.abs(dx) < 3 && Math.abs(dy) < 3) showEntityDetail(p.raw);
                 }
+                dragIdx = -1;
+                graphCanvas.style.cursor = graphHoveredIdx >= 0 ? 'pointer' : 'grab';
             };
-            graphCanvas.onmouseleave = function() { graphDragNode = null; graphCanvas.style.cursor = 'grab'; };
         }
 
         function drawGraph() {
-            var ctx = graphCtx;
-            var W = graphCanvas.width, H = graphCanvas.height;
+            if (!graphCtx) return;
+            var ctx = graphCtx, W = graphCanvas.width, H = graphCanvas.height;
             ctx.clearRect(0, 0, W, H);
 
-            // 关系线
-            graphLinks.forEach(function(l) {
-                var s = graphNodePositions[l.source];
-                var t = graphNodePositions[l.target];
-                if (!s || !t) return;
+            // 边
+            graphEdges.forEach(e => {
+                var s = graphPositions[e.srcIdx], t = graphPositions[e.tgtIdx];
                 ctx.beginPath();
                 ctx.moveTo(s.x, s.y);
                 ctx.lineTo(t.x, t.y);
-                ctx.strokeStyle = '#aaa';
-                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = '#ccc';
+                ctx.lineWidth = 1;
                 ctx.stroke();
             });
 
             // 节点
-            for (var name in graphNodePositions) {
-                var p = graphNodePositions[name];
-                var r = p.size / 2 || 15;
-
-                // 阴影
+            graphPositions.forEach((p, i) => {
+                var r = p.size / 2;
                 ctx.beginPath();
-                ctx.arc(p.x, p.y, r, 0, 2 * Math.PI);
-                ctx.fillStyle = p.color || '#4A90D9';
-                ctx.shadowColor = 'rgba(0,0,0,0.15)';
-                ctx.shadowBlur = 6;
+                ctx.arc(p.x, p.y, r, 0, 2*Math.PI);
+                ctx.fillStyle = p.color;
                 ctx.fill();
+                ctx.strokeStyle = (i === graphHoveredIdx) ? '#333' : '#fff';
+                ctx.lineWidth = (i === graphHoveredIdx) ? 2.5 : 1.5;
+                ctx.stroke();
                 ctx.shadowBlur = 0;
 
-                // 边框
-                ctx.strokeStyle = '#fff';
-                ctx.lineWidth = 2;
-                ctx.stroke();
-
                 // 标签
-                ctx.fillStyle = '#333';
-                ctx.font = '11px sans-serif';
-                var label = name.length > 8 ? name.slice(0, 8) + '..' : name;
-                ctx.fillText(label, p.x + r + 4, p.y + 4);
-            }
+                ctx.fillStyle = '#222';
+                ctx.font = '10px sans-serif';
+                var txt = p.name.length > 7 ? p.name.slice(0,7)+'.' : p.name;
+                ctx.fillText(txt, p.x + r + 3, p.y + 4);
+            });
         }
 
         // 导出图谱
         function exportGraph() {
             if (graphCanvas) {
-                var link = document.createElement('a');
-                link.download = 'wiki-graph.png';
-                link.href = graphCanvas.toDataURL('image/png');
-                link.click();
+                var a = document.createElement('a');
+                a.download = 'wiki-graph.png';
+                a.href = graphCanvas.toDataURL();
+                a.click();
             }
         }
 

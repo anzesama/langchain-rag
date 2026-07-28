@@ -72,6 +72,16 @@ class WikiDB:
         self.conn.row_factory = sqlite3.Row
         return self.conn
 
+    @staticmethod
+    def _safe_json_load(value):
+        """安全 JSON 解析 — 纯文本直接包装为 {"text": value}"""
+        if not value or not value.strip() or value.strip() in ('{}', 'null'):
+            return {}
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {"text": value.strip()}
+
     def close(self):
         """关闭数据库连接"""
         if self.conn:
@@ -374,7 +384,7 @@ class WikiDB:
                     "source_name": row['source_name'],
                     "target_name": row['target_name'],
                     "rel_type": row['rel_type'],
-                    "properties": json.loads(row['properties']) if row['properties'] else {},
+                    "properties": self._safe_json_load(row['properties']),
                     "source_chapter": row['source_chapter']
                 }
                 for row in rows

@@ -137,7 +137,7 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Wiki 知识图谱管理系统</title>
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.3.3/dist/echarts.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', sans-serif; background: #f0f2f5; padding: 20px; }
@@ -889,8 +889,6 @@ HTML_TEMPLATE = """
 
             // 加载数据
             loadStats();
-            loadEntities();
-            loadRelations();
             // 等待 entities 和 relations 加载完成后渲染图谱
             Promise.all([loadEntities(), loadRelations()]).then(function() {
                 loadGraph();
@@ -1565,8 +1563,7 @@ if (data.relations.length === 0) {
             connectingSource = null;
             connectingSourceName = null;
             document.getElementById('connecting-hint').style.display = 'none';
-            graphChart.dispatchAction({ type: 'unselect', seriesIndex: 0 });
-            graphChart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+            // ECharts 已替换为 Canvas，无需 dispatchAction
         }
 
         function startConnectingFromEntity(entityObj) {
@@ -1929,9 +1926,13 @@ if (data.relations.length === 0) {
             const container = document.getElementById('graph-chart');
             if (!container) { console.error('[graph] container #graph-chart not found'); return; }
 
-            if (graphChart) {
-                graphChart.dispose();
+            if (graphCanvas) {
+                graphCanvas.remove();
+                graphCanvas = null; graphCtx = null; graphNodePositions = {};
             }
+            // 清空容器
+            if (graphCanvas) { graphCanvas.remove(); graphCanvas = null; graphCtx = null; graphNodePositions = {}; }
+            container.innerHTML = '';
 
             // 准备数据
             const typeSet = [...new Set(entities.map(e => e.type || '未分类'))];
@@ -1966,119 +1967,169 @@ if (data.relations.length === 0) {
                 linkedNodeNames.add(r.target_name);
             });
 
-            // 过滤节点：仅保留有关系的节点（避免孤立节点显示）
-            const filteredNodes = nodes.filter(n => linkedNodeNames.has(n.id));
+            // 过滤节点：仅保留有关系的节点，同时移除 category（避免 ECharts dataIndex bug）
+            const filteredNodes = nodes.filter(n => linkedNodeNames.has(n.id)).map(function(n) {
+                var clean = { id: n.id, name: n.name, symbolSize: n.symbolSize, itemStyle: n.itemStyle, _raw: n._raw };
+                return clean;
+            });
 
-            // 构建最终的 links（用关系名做 source/target）
-            const links = validRelations.map(r => ({
-                source: r.source_name,
-                target: r.target_name,
-                name: r.rel_type,
-                lineStyle: { width: 2, curveness: 0.3 }
-            }));
+            // links 用名字字符串做 source/target（回退到 2f3c580 的稳定方案）
+            const links = validRelations.map(function(r) {
+                return {
+                    source: r.source_name,
+                    target: r.target_name,
+                    name: r.rel_type,
+                    lineStyle: { width: 2, curveness: 0.3 }
+                };
+            });
 
             console.log('[graph] nodes:', nodes.length, 'connected:', filteredNodes.length, 'links:', links.length);
             console.log('[graph] container size:', container.offsetWidth, 'x', container.offsetHeight);
 
-            // 延迟初始化——等待面板 display:block 后浏览器 reflow
+            // 延迟初始化 — 使用 Canvas 手动渲染（绕过ECharts bug）
             setTimeout(function() {
-                console.log('[graph] container size after timeout:', container.offsetWidth, 'x', container.offsetHeight);
-                graphChart = echarts.init(container);
-
-                const option = {
-                    title: {
-                        text: 'Wiki 知识图谱',
-                        left: 'center'
-                    },
-                    tooltip: {
-                        formatter: function(params) {
-                            if (params.dataType === 'node') {
-                                const e = params.data._raw;
-                                var html = '<strong>' + escapeHtml(e.name || '未知') + '</strong><br/>';
-                                html += '类型: ' + escapeHtml(e.type || '未分类') + '<br/>';
-                                if (e.properties) {
-                                    try {
-                                        var props = typeof e.properties === 'string' ? JSON.parse(e.properties) : e.properties;
-                                        if (props && typeof props === 'object') {
-                                            Object.keys(props).forEach(function(k) {
-                                                html += escapeHtml(k) + ': ' + escapeHtml(String(props[k])) + '<br/>';
-                                            });
-                                        } else {
-                                            html += '属性: ' + escapeHtml(String(e.properties)) + '<br/>';
-                                        }
-                                    } catch (err) {
-                                        html += '属性: ' + escapeHtml(String(e.properties)) + '<br/>';
-                                    }
-                                }
-                                return html;
-                            } else {
-                                return escapeHtml(params.data.source || '未知') + ' - ' + escapeHtml(params.data.name || '未知') + ' - ' + escapeHtml(params.data.target || '未知');
-                            }
-                        }
-                    },
-                    legend: [{
-                        data: typeSet,
-                        orient: 'horizontal',
-                        top: 30
-                    }],
-                    series: [{
-                        type: 'graph',
-                        layout: 'force',
-                        data: filteredNodes,
-                        links: links,
-                        categories: typeSet.map(function(t){ return { name: t }; }),
-                        roam: true,
-                        label: { show: true, position: 'right' },
-                        force: {
-                            repulsion: 300,
-                            edgeLength: 120
-                        },
-                        lineStyle: {
-                            color: 'source',
-                            curveness: 0.3
-                        },
-                        emphasis: {
-                            focus: 'adjacency',
-                            lineStyle: { width: 4 }
-                        }
-                    }]
-                };
-
-                graphChart.setOption(option);
-                console.log('[graph] setOption done');
-
-                graphChart.off('click');
-                graphChart.on('click', function(params) {
-                    if (params.dataType === 'node' && params.data._raw) {
-                        if (connectingSource !== null) {
-                            if (params.data._raw.id === connectingSource) {
-                                showToast('不能连接自身', 'error');
-                                return;
-                            }
-                            completeConnection(params.data._raw);
-                        } else {
-                            showEntityDetail(params.data._raw);
-                        }
-                    }
-                });
-
+                renderGraphCanvas(filteredNodes, links, container);
                 document.getElementById('graph-entity-count').textContent = filteredNodes.length;
                 document.getElementById('graph-relation-count').textContent = links.length;
             }, 100);
         }
 
+        // ========== Canvas 知识图谱渲染器 ==========
+        var graphCanvas = null, graphCtx = null;
+        var graphNodePositions = {};  // name -> {x, y}
+        var graphDragNode = null;
+        var graphLinks = [];  // 当前渲染的关系数据
+
+        function renderGraphCanvas(nodes, links, container) {
+            graphLinks = links;
+            var W = container.offsetWidth || 728;
+            var H = container.offsetHeight || 600;
+
+            // 创建/复用 canvas
+            if (!graphCanvas) {
+                graphCanvas = document.createElement('canvas');
+                graphCanvas.width = W;
+                graphCanvas.height = H;
+                graphCanvas.style.width = W + 'px';
+                graphCanvas.style.height = H + 'px';
+                graphCanvas.style.cursor = 'grab';
+                container.appendChild(graphCanvas);
+                graphCtx = graphCanvas.getContext('2d');
+            } else {
+                graphCanvas.width = W;
+                graphCanvas.height = H;
+                graphCanvas.style.width = W + 'px';
+                graphCanvas.style.height = H + 'px';
+            }
+
+            // 为每个节点初始化位置（圆形布局 + 小随机扰动）
+            var cx = W / 2, cy = H / 2, radius = Math.min(W, H) * 0.38;
+            graphNodePositions = {};
+            nodes.forEach(function(n, i) {
+                var angle = (i / nodes.length) * 2 * Math.PI;
+                graphNodePositions[n.name] = {
+                    x: cx + Math.cos(angle) * radius + (Math.random() - 0.5) * 60,
+                    y: cy + Math.sin(angle) * radius + (Math.random() - 0.5) * 60,
+                    color: n.itemStyle ? n.itemStyle.color : '#4A90D9',
+                    size: n.symbolSize || 30,
+                    raw: n._raw || {}
+                };
+            });
+
+            // 绘制
+            drawGraph();
+
+            // 鼠标事件
+            graphCanvas.onmousedown = function(e) {
+                var rect = graphCanvas.getBoundingClientRect();
+                var mx = e.clientX - rect.left, my = e.clientY - rect.top;
+                for (var name in graphNodePositions) {
+                    var p = graphNodePositions[name];
+                    var dx = mx - p.x, dy = my - p.y;
+                    if (dx * dx + dy * dy < (p.size / 2 + 5) * (p.size / 2 + 5)) {
+                        graphDragNode = name;
+                        graphCanvas.style.cursor = 'grabbing';
+                        return;
+                    }
+                }
+            };
+            graphCanvas.onmousemove = function(e) {
+                if (!graphDragNode) return;
+                var rect = graphCanvas.getBoundingClientRect();
+                var p = graphNodePositions[graphDragNode];
+                p.x = e.clientX - rect.left;
+                p.y = e.clientY - rect.top;
+                drawGraph();
+            };
+            graphCanvas.onmouseup = function(e) {
+                if (graphDragNode) {
+                    var p = graphNodePositions[graphDragNode];
+                    // 点击 = 短暂拖拽（<3px），打开详情
+                    var dx = p.x - (e.clientX - graphCanvas.getBoundingClientRect().left);
+                    var dy = p.y - (e.clientY - graphCanvas.getBoundingClientRect().top);
+                    if (Math.abs(dx) < 3 && Math.abs(dy) < 3) {
+                        var raw = graphNodePositions[graphDragNode].raw;
+                        if (raw && raw.id) showEntityDetail(raw);
+                    }
+                    graphDragNode = null;
+                    graphCanvas.style.cursor = 'grab';
+                }
+            };
+            graphCanvas.onmouseleave = function() { graphDragNode = null; graphCanvas.style.cursor = 'grab'; };
+        }
+
+        function drawGraph() {
+            var ctx = graphCtx;
+            var W = graphCanvas.width, H = graphCanvas.height;
+            ctx.clearRect(0, 0, W, H);
+
+            // 关系线
+            graphLinks.forEach(function(l) {
+                var s = graphNodePositions[l.source];
+                var t = graphNodePositions[l.target];
+                if (!s || !t) return;
+                ctx.beginPath();
+                ctx.moveTo(s.x, s.y);
+                ctx.lineTo(t.x, t.y);
+                ctx.strokeStyle = '#aaa';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            });
+
+            // 节点
+            for (var name in graphNodePositions) {
+                var p = graphNodePositions[name];
+                var r = p.size / 2 || 15;
+
+                // 阴影
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, r, 0, 2 * Math.PI);
+                ctx.fillStyle = p.color || '#4A90D9';
+                ctx.shadowColor = 'rgba(0,0,0,0.15)';
+                ctx.shadowBlur = 6;
+                ctx.fill();
+                ctx.shadowBlur = 0;
+
+                // 边框
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // 标签
+                ctx.fillStyle = '#333';
+                ctx.font = '11px sans-serif';
+                var label = name.length > 8 ? name.slice(0, 8) + '..' : name;
+                ctx.fillText(label, p.x + r + 4, p.y + 4);
+            }
+        }
+
         // 导出图谱
         function exportGraph() {
-            if (graphChart) {
-                const url = graphChart.getDataURL({
-                    type: 'png',
-                    pixelRatio: 2,
-                    backgroundColor: '#fff'
-                });
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'wiki-graph.png';
-                a.click();
+            if (graphCanvas) {
+                var link = document.createElement('a');
+                link.download = 'wiki-graph.png';
+                link.href = graphCanvas.toDataURL('image/png');
+                link.click();
             }
         }
 

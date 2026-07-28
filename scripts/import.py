@@ -103,6 +103,8 @@ def main():
         # Step 2+3+4: entities + relations
         if 2 in enabled_steps or 3 in enabled_steps or 4 in enabled_steps:
             stats = importer._import_entities_and_relations(text, source_name)
+            total['entities'] += stats.get('entities_added', 0)
+            total['relations'] += stats.get('relations_added', 0)
 
         total['files'] += 1
         total['chunks'] += len(chunks) if chunks else 0

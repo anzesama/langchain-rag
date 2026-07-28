@@ -29,7 +29,11 @@ class LLMExtractor:
 
     def extract_all(self, text: str, source: str = None) -> Dict[str, Any]:
         """
-        三路提取合并
+        三路提取合并 (v3 — jieba TF-IDF 为主路)
+
+        jieba TF-IDF → 高质量实体（稳定、无 API 成本、快）
+        LLM API → 关系提取 + 补充少量队实体
+        regex → 降级为审核参考，不在主路中
 
         Args:
             text: 待提取的文本
@@ -37,38 +41,58 @@ class LLMExtractor:
 
         Returns:
             {
-                'llm': [LLMEntity, ...],
-                'regex': [Entity, ...],
-                'jieba': [Entity, ...],
-                'relations': [Relation, ...]
+                'jieba': [jieba实体],  # 主路
+                'llm': [LLM实体],      # 辅助（关系）
+                'regex': [正则实体],   # 仅参考
+                'entities': [合并后的所有去重实体],
+                'relations': [LLM提取的关系]
             }
         """
-        # 1. LLM 提取（包含实体和关系）
+        # 1. ===== jieba TF-IDF 主路实体提取 =====
+        jieba_result = self._jieba_extract(text)
+        # 去重（按名称，同一实体不重复）
+        jieba_names = {}
+        jieba_unique = []
+        for e in jieba_result.get("entities", []):
+            if e["name"] not in jieba_names:
+                jieba_names[e["name"]] = e
+                jieba_unique.append(e)
+
+        # 2. ===== LLM 提取（辅助：补充关系 + 关键实体）=----
         llm_result = self._llm_extract(text)
 
-        # 2. 正则提取（只提取实体）
+        # 用 jieba 实体作为基准名集
+        jieba_name_set = set(jieba_names.keys())
+
+        # LLM 实体去重：只保留不在 jieba 中的
+        llm_entities = [e for e in llm_result.get("entities", []) if e["name"] not in jieba_name_set]
+
+        # LLM 关系过滤：只保留 source/target 至少有一方在 jieba 实体中的
+        filtered_relations = []
+        for r in llm_result.get("relations", []):
+            src = r.get("source", "").strip()
+            tgt = r.get("target", "").strip()
+            if src and tgt and (src in jieba_name_set or tgt in jieba_name_set):
+                filtered_relations.append(r)
+
+        # 3. ===== 正则提取（regex）= 仅参考 =====
         regex_result = self._regex_extract(text)
+        regex_entities = [e for e in regex_result.get("entities", []) 
+                          if e["name"] not in jieba_name_set]
 
-        # 3. jieba 提取（只提取实体）
-        jieba_result = self._jieba_extract(text)
+        # 合并（主路 + 辅路 + 关系）
+        all_entities = jieba_unique + llm_entities
 
-        # 去重: LLM 结果作为基准, 过滤掉与 LLM 重复的实体
-        llm_entity_names = {e["name"]: e for e in llm_result["entities"]}
-        filtered_regex = [e for e in regex_result.get("entities", []) if e["name"] not in llm_entity_names]
-        filtered_jieba = [e for e in jieba_result.get("entities", []) if e["name"] not in llm_entity_names]
-
-        # 合并实体（LLM + 正则 + jieba）
-        all_entities = llm_result["entities"] + filtered_regex + filtered_jieba
-
-        # 合并关系（LLM + 正则）
-        all_relations = llm_result.get("relations", []) + regex_result.get("relations", [])
+        logger.info(
+            f"提取结果: jieba主路={len(jieba_unique)} LRM实体={len(llm_entities)} 关系={len(filtered_relations)} 正则参考={len(regex_entities)}"
+        )
 
         return {
-            'llm': llm_result["entities"],
-            'regex': filtered_regex,
-            'jieba': filtered_jieba,
+            'jieba': jieba_unique,
+            'llm': llm_entities,
+            'regex': regex_entities,
             'entities': all_entities,
-            'relations': all_relations
+            'relations': filtered_relations
         }
 
     def _llm_extract(self, text: str) -> Dict[str, Any]:
@@ -252,12 +276,12 @@ class LLMExtractor:
         logger.warning(f"Agnes API failed after {self.max_retries} retries: {last_error}")
         return {'entities': [], 'relations': []}
 
-        正则提取实体和关系
-
-        保留 wiki_updater.py 中的原有模式，但移除蛊真人专用内容
+    def _regex_extract(self, text: str) -> Dict[str, Any]:
         """
-        import re
-        from rag_core.wiki_db import WikiDB
+        jieba TF-IDF 关键词提取作为补充实体
+
+        仅提取高区分度关键词，不提取关系
+        """
         from rag_config import BASE_DIR
 
         wiki_db = WikiDB()

@@ -568,7 +568,7 @@ HTML_TEMPLATE = """
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
             <button class="nav-tab active" data-panel="graph">知识图谱</button>
-            <button class="nav-tab" data-panel="llm">LLM 辅助判断</button>
+            <button class="nav-tab" data-panel="llm">LLM 精筛与提取</button>
             <button class="nav-tab" data-panel="search">知识库搜索</button>
             <button class="nav-tab" data-panel="graph-search">图搜索</button>
             <button class="nav-tab" data-panel="cleanup">审核清理</button>
@@ -624,17 +624,41 @@ HTML_TEMPLATE = """
         <!-- LLM Panel -->
         <div id="panel-llm" class="panel" style="display: none;">
             <div class="panel-header">
-                <div class="panel-title">LLM 辅助判断</div>
-                <div class="search-bar">
-                    <select id="llm-type" class="search-input" style="width: 150px;">
-                        <option value="entity">审核实体</option>
-                        <option value="relation">审核关系</option>
+                <div class="panel-title">LLM 精筛与关系提取</div>
+            </div>
+
+            <!-- 区域配置 -->
+            <div style="margin-bottom: 16px; padding: 12px; background: #f9f9f9; border-radius: 4px;">
+                <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <label style="font-weight: bold;">领域分类:</label>
+                    <select id="domain-select" onchange="updateDomain()" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px;">
+                        <option value="machine-learning" selected>ML/数据科学</option>
+                        <option value="novel">小说/剧情</option>
+                        <option value="ontology">技术概念本体</option>
                     </select>
-                    <button class="btn btn-purple" onclick="runLLMReview()">开始审核</button>
+                    <label style="font-weight: bold;">LLM API:</label>
+                    <input type="text" id="llm-endpoint" placeholder="http://..." style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; width: 240px;">
+                    <input type="text" id="llm-key" placeholder="sk-..." style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; width: 160px;">
+                    <input type="text" id="llm-model" placeholder="model name" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; width: 140px;">
+                    <button class="btn btn-secondary" onclick="saveLLMSettings()" style="font-size: 13px; padding: 6px 14px;">保存设置</button>
                 </div>
             </div>
-            <div id="llm-results" style="margin-top: 20px;">
-                <div class="empty-state">选择实体或关系类型，点击"开始审核"让 LLM 帮助判断</div>
+
+            <!-- 来源选择 -->
+            <div style="margin-bottom: 16px; padding: 12px; background: #f9f9f9; border-radius: 4px;">
+                <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <label style="font-weight: bold;">来源文件:</label>
+                    <select id="source-select" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; flex: 1; min-width: 200px;">
+                        <option value="">-- 选择来源文件 --</option>
+                    </select>
+                    <button class="btn btn-purple" onclick="runRefineEntities()" style="padding: 8px 16px;">精筛实体</button>
+                    <button class="btn btn-primary" onclick="runExtractRelations()" style="padding: 8px 16px;">提取关系</button>
+                </div>
+            </div>
+
+            <!-- 结果区域 -->
+            <div id="llm-results">
+                <div class="empty-state">选择来源文件，执行 LLM 精筛或关系提取</div>
             </div>
         </div>
 
@@ -892,6 +916,10 @@ HTML_TEMPLATE = """
             // 仅在图表面板加载图谱
             if (panelName === 'graph') {
                 loadGraph();
+            }
+            if (panelName === 'llm') {
+                loadLLMSettings();
+                loadSources();
             }
             if (panelName === 'cleanup') {
                 loadCleanupData();
@@ -2142,185 +2170,149 @@ if (data.relations.length === 0) {
             }
         }
 
-        // LLM 审核功能
-        async function runLLMReview() {
-            const type = document.getElementById('llm-type').value;
-
-            if (type === 'entity') {
-                await reviewEntities();
-            } else {
-                await reviewRelations();
-            }
-        }
-
-        async function reviewEntities() {
-            const content = document.getElementById('llm-results');
-            document.getElementById('llm-modal-title').textContent = 'LLM 审核实体';
-            document.getElementById('llm-modal').style.display = 'block';
-            content.innerHTML = '<div class="empty-state"><span class="loading"></span> LLM 正在审核实体...</div>';
-
+        // LLM 精筛 + 关系提取 + 设置管理
+        async function loadLLMSettings() {
             try {
-                const res = await fetch('/api/llm/review-entities');
+                const res = await fetch('/api/settings');
                 const data = await res.json();
                 if (data.success) {
-                    try {
-                        const result = JSON.parse(data.result);
-                        let html = `
-                            <div style="line-height: 1.8;">
-                                <h3 style="color: #1890ff; margin-bottom: 15px;">LLM 审核结果</h3>
-                                <div style="margin-bottom: 15px;">
-                                    <h4 style="color: #52c41a; margin-bottom: 8px;">通过: ${result.valid ? result.valid.length : 0} 项</h4>
-                                    <div style="background: #f6ffed; padding: 10px; border-radius: 4px; border: 1px solid #b7eb8f; max-height: 200px; overflow-y: auto;">${Array.isArray(result.valid) ? result.valid.map(item => `<div style="margin: 4px 0; color: #389e0d;">✓ ${escapeHtml(String(item))}</div>`).join('') : '<div style="color: #999;">无</div>'}</div>
-                                </div>
-                                <div style="margin-bottom: 15px;">
-                                    <h4 style="color: #ff4d4f; margin-bottom: 8px;">拒绝: ${result.invalid ? result.invalid.length : 0} 项</h4>
-                                    <div style="background: #fff1f0; padding: 10px; border-radius: 4px; border: 1px solid #ffa39e; max-height: 200px; overflow-y: auto;">${Array.isArray(result.invalid) ? result.invalid.map(item => `<div style="margin: 4px 0; color: #cf1322;">✗ ${escapeHtml(String(item))}</div>`).join('') : '<div style="color: #999;">无</div>'}</div>
-                                </div>
-                                <div style="background: #e6f7ff; padding: 10px; border-radius: 4px; border: 1px solid #91d5ff; margin-bottom: 15px;">
-                                    <h4 style="color: #1890ff; margin-bottom: 5px;">说明</h4>
-                                    <div style="color: #096dd9; white-space: pre-wrap;">${escapeHtml(result.reason || '无')}</div>
-                                </div>
-                                <button class="btn btn-primary" onclick="applyLLMReview('entity', JSON.stringify(result))">应用审核结果</button>
-                            </div>
-                        `;
-                        content.innerHTML = html;
-                    } catch (e) {
-                        content.innerHTML = `
-                            <div style="line-height: 1.8;">
-                                <h3 style="color: #1890ff; margin-bottom: 15px;">LLM 审核结果</h3>
-                                <pre style="background: #f5f5f5; padding: 15px; border-radius: 4px; white-space: pre-wrap; max-height: 500px; overflow-y: auto;">${escapeHtml(data.result)}</pre>
-                            </div>
-                        `;
-                    }
-                                } else {
-                    content.innerHTML = `<div class="empty-state">审核失败: ${escapeHtml(data.error)}</div>`;
+                    const s = data.settings;
+                    if (s.llm_endpoint) document.getElementById('llm-endpoint').value = s.llm_endpoint;
+                    if (s.llm_api_key) document.getElementById('llm-key').value = s.llm_api_key;
+                    if (s.llm_model) document.getElementById('llm-model').value = s.llm_model;
+                    if (s.domain_type) document.getElementById('domain-select').value = s.domain_type;
                 }
-            } catch (e) {
-                content.innerHTML = `<div class="empty-state">审核失败: ${escapeHtml(e.message)}</div>`;
-            }
+            } catch (e) { console.error('加载LLM设置失败:', e); }
         }
 
-        async function reviewRelations() {
-            const content = document.getElementById('llm-results');
-            document.getElementById('llm-modal-title').textContent = 'LLM 审核关系';
-            document.getElementById('llm-modal').style.display = 'block';
-            content.innerHTML = '<div class="empty-state"><span class="loading"></span> LLM 正在审核关系...</div>';
-
+        async function loadSources() {
             try {
-                const res = await fetch('/api/llm/review-relations');
+                const res = await fetch('/api/sources');
+                const data = await res.json();
+                if (data.success && data.sources) {
+                    const sel = document.getElementById('source-select');
+                    sel.innerHTML = '<option value="">-- 选择来源文件 --</option>' +
+                        data.sources.map(s => `<option value="${s}">${s}</option>`).join('');
+                }
+            } catch (e) { console.error('加载来源失败:', e); }
+        }
+
+        async function saveLLMSettings() {
+            const settings = {
+                domain_type: document.getElementById('domain-select').value,
+                llm_endpoint: document.getElementById('llm-endpoint').value,
+                llm_api_key: document.getElementById('llm-key').value,
+                llm_model: document.getElementById('llm-model').value,
+            };
+            try {
+                const res = await fetch('/api/settings/update', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({settings})
+                });
                 const data = await res.json();
                 if (data.success) {
-                    try {
-                        const result = JSON.parse(data.result);
-                        let html = `
-                            <div style="line-height: 1.8;">
-                                <h3 style="color: #1890ff; margin-bottom: 15px;">LLM 审核结果</h3>
-                                <div style="margin-bottom: 15px;">
-                                    <h4 style="color: #52c41a; margin-bottom: 8px;">通过: ${result.valid ? result.valid.length : 0} 项</h4>
-                                    <div style="background: #f6ffed; padding: 10px; border-radius: 4px; border: 1px solid #b7eb8f; max-height: 200px; overflow-y: auto;">${Array.isArray(result.valid) ? result.valid.map(item => `<div style="margin: 4px 0; color: #389e0d;">✓ ${escapeHtml(String(item[0]))} - ${escapeHtml(String(item[2]))} - ${escapeHtml(String(item[1]))}</div>`).join('') : '<div style="color: #999;">无</div>'}</div>
-                                </div>
-                                <div style="margin-bottom: 15px;">
-                                    <h4 style="color: #ff4d4f; margin-bottom: 8px;">拒绝: ${result.invalid ? result.invalid.length : 0} 项</h4>
-                                    <div style="background: #fff1f0; padding: 10px; border-radius: 4px; border: 1px solid #ffa39e; max-height: 200px; overflow-y: auto;">${Array.isArray(result.invalid) ? result.invalid.map(item => `<div style="margin: 4px 0; color: #cf1322;">✗ ${escapeHtml(String(item[0]))} - ${escapeHtml(String(item[2]))} - ${escapeHtml(String(item[1]))}</div>`).join('') : '<div style="color: #999;">无</div>'}</div>
-                                </div>
-                                <div style="background: #e6f7ff; padding: 10px; border-radius: 4px; border: 1px solid #91d5ff; margin-bottom: 15px;">
-                                    <h4 style="color: #1890ff; margin-bottom: 5px;">说明</h4>
-                                    <div style="color: #096dd9; white-space: pre-wrap;">${escapeHtml(result.reason || '无')}</div>
-                                </div>
-                                <button class="btn btn-primary" onclick="applyLLMReview('relation', JSON.stringify(result))">应用审核结果</button>
-                            </div>
-                        `;
-                        content.innerHTML = html;
-                    } catch (e) {
-                        content.innerHTML = `
-                            <div style="line-height: 1.8;">
-                                <h3 style="color: #1890ff; margin-bottom: 15px;">LLM 审核结果</h3>
-                                <pre style="background: #f5f5f5; padding: 15px; border-radius: 4px; white-space: pre-wrap; max-height: 500px; overflow-y: auto;">${escapeHtml(data.result)}</pre>
-                            </div>
-                        `;
-                    }
-                                } else {
-                    content.innerHTML = `<div class="empty-state">审核失败: ${escapeHtml(data.error)}</div>`;
+                    showToast('LLM 设置已保存', 'success');
+                } else {
+                    showToast('保存失败: ' + data.error, 'error');
                 }
-            } catch (e) {
-                content.innerHTML = `<div class="empty-state">审核失败: ${escapeHtml(e.message)}</div>`;
-            }
+            } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
         }
 
-        async function applyLLMReview(type, result) {
-            // 如果 result 是字符串，先解析为对象
-            if (typeof result === 'string') {
-                result = JSON.parse(result);
-            }
-            
-            let entities = [];
-            let relations = [];
+        async function updateDomain() {
+            const domain = document.getElementById('domain-select').value;
+            await saveLLMSettings();
+        }
 
-            if (type === 'entity') {
-                entities = result.valid || [];
-            } else {
-                relations = result.valid || [];
-            }
+        function escapeHtml(str) {
+            var div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
 
-            if (!entities.length && !relations.length) {
-                showToast('没有可应用的审核结果', 'error');
-                return;
-            }
-
-            if (!confirm(`确认应用审核结果吗？
-通过: ${entities.length + relations.length} 项
-
-此操作将批量批准这些项目。`)) {
-                return;
-            }
-
-            let successCount = 0;
-            let failCount = 0;
-
+        async function runRefineEntities() {
+            const source = document.getElementById('source-select').value;
+            if (!source) { showToast('请先选择来源文件', 'error'); return; }
+            const content = document.getElementById('llm-results');
+            content.innerHTML = '<div class="empty-state"><span class="loading"></span> LLM 正在精筛实体...</div>';
             try {
-                if (entities.length > 0) {
-                    const res = await fetch('/api/entities/batch-approve', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({entity_ids: entities})
-                    });
-                    const data = await res.json();
-                    if (data.success) {
-                        successCount += data.approved_count || entities.length;
-                        failCount += (entities.length - successCount);
-                    } else {
-                        failCount += entities.length;
+                const res = await fetch('/api/llm/refine-entities', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({source})
+                });
+                const data = await res.json();
+                if (data.success) {
+                    const r = data.result;
+                    let html = `<div style="line-height: 1.8;"><h3 style="color: #1890ff; margin-bottom: 15px;">LLM 精筛结果</h3>`;
+                    html += `<p>总实体: ${r.entities.length + r.removed.length} → 保留: ${r.entities.length}, 删除: ${r.removed.length}</p>`;
+                    if (r.suggestions) html += `<div style="padding: 8px; background: #e6f7ff; border-radius: 4px; margin: 8px 0;">💡 ${escapeHtml(String(r.suggestions))}</div>`;
+                    html += `<h4 style="color: #52c41a; margin: 8px 0;">保留实体</h4><ul style="max-height: 300px; overflow-y: auto;">`;
+                    (r.entities||[]).forEach(e => { html += `<li style="color: #389e0d;">${escapeHtml(e.name||'?')} (${escapeHtml(e.type||'')})</li>`; });
+                    html += '</ul>';
+                    if ((r.removed||[]).length > 0) {
+                        html += `<h4 style="color: #ff4d4f; margin: 8px 0;">删除实体</h4><ul style="max-height: 200px; overflow-y: auto;">`;
+                        r.removed.forEach(e => { html += `<li style="color: #cf1322;">${escapeHtml(e.name||'?')}</li>`; });
+                        html += '</ul>';
                     }
+                    html += '</div>';
+                    content.innerHTML = html;
+                } else {
+                    content.innerHTML = `<div class="empty-state">精筛失败: ${escapeHtml(data.error)}</div>`;
                 }
+            } catch (e) { content.innerHTML = `<div class="empty-state">请求失败: ${escapeHtml(e.message)}</div>`; }
+        }
 
-                if (relations.length > 0) {
-                    const res = await fetch('/api/relations/batch-approve', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({relation_ids: relations})
-                    });
-                    const data = await res.json();
-                    if (data.success) {
-                        successCount += data.approved_count || relations.length;
-                        failCount += (relations.length - successCount);
+        async function runExtractRelations() {
+            const source = document.getElementById('source-select').value;
+            if (!source) { showToast('请先选择来源文件', 'error'); return; }
+            const content = document.getElementById('llm-results');
+            content.innerHTML = '<div class="empty-state"><span class="loading"></span> LLM 正在提取关系...</div>';
+            try {
+                const res = await fetch('/api/llm/extract-relations', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({source})
+                });
+                const data = await res.json();
+                if (data.success) {
+                    const rels = data.relations || [];
+                    let html = '<div style="line-height: 1.8;"><h3 style="color: #1890ff; margin-bottom: 15px;">关系提取结果</h3>';
+                    html += `<p>提取: ${rels.length} 条关系</p>`;
+                    if (rels.length > 0) {
+                        html += '<table style="width: 100%; border-collapse: collapse; margin-top: 10px;"><thead><tr style="background: #f5f5f5;"><th style="padding: 6px; text-align: left;">源实体</th><th style="padding: 6px; text-align: left;">关系类型</th><th style="padding: 6px; text-align: left;">目标实体</th></tr></thead><tbody>';
+                        rels.forEach(r => {
+                            html += `<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">${escapeHtml(r.source||'')}</td><td style="padding: 6px; border-bottom: 1px solid #eee; color: #1890ff;">${escapeHtml(r.type||'')}</td><td style="padding: 6px; border-bottom: 1px solid #eee;">${escapeHtml(r.target||'')}</td></tr>`;
+                        });
+                        html += '</tbody></table>';
+                        html += `<button class="btn btn-primary" onclick="importRelations(${JSON.stringify(rels)})" style="margin-top: 12px;">导入所有关系</button>`;
                     } else {
-                        failCount += relations.length;
+                        html += '<p style="color: #999;">未提取到任何关系</p>';
                     }
+                    html += '</div>';
+                    content.innerHTML = html;
+                } else {
+                    content.innerHTML = `<div class="empty-state">提取失败: ${escapeHtml(data.error)}</div>`;
                 }
+            } catch (e) { content.innerHTML = `<div class="empty-state">请求失败: ${escapeHtml(e.message)}</div>`; }
+        }
 
-                if (successCount > 0) {
-                    showToast(`成功应用 ${successCount} 项审核结果`, 'success');
-                    document.getElementById('llm-modal').style.display = 'none';
+        async function importRelations(rels) {
+            if (!confirm(`确认导入 ${rels.length} 条关系？`)) return;
+            try {
+                const res = await fetch('/api/relations/batch-import', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({relations: rels})
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`成功导入 ${data.imported} 条关系`, 'success');
                     loadStats();
-                    loadEntities();
-                    loadRelations();
+                } else {
+                    showToast('导入失败: ' + data.error, 'error');
                 }
-                if (failCount > 0) {
-                    showToast(`应用失败: ${failCount} 项`, 'error');
-                }
-            } catch (e) {
-                showToast(`应用失败: ${e.message}`, 'error');
-            }
+            } catch (e) { showToast('导入失败: ' + e.message, 'error'); }
         }
 
         function closeLLMModal() {
@@ -2851,6 +2843,33 @@ def import_entities():
         return jsonify({"success": True, "imported_count": imported_count})
     except Exception as e:
         return jsonify({"success": False, "error": "操作失败，请查看日志"}), 500
+
+
+@app.route('/api/relations/batch-import', methods=['POST'])
+def batch_import_relations():
+    """批量导入关系（从 LLM 提取的结果）"""
+    try:
+        data = request.json
+        relations = data.get('relations', [])
+        if not relations:
+            return jsonify({"success": False, "error": "无关系数据"}), 400
+
+        wiki_db = WikiDB(str(DB_PATH))
+        wiki_db.init_db()
+        imported = 0
+        for rel in relations:
+            try:
+                src = rel.get('source', '').strip()
+                tgt = rel.get('target', '').strip()
+                rtype = rel.get('type', '关联')
+                if src and tgt:
+                    wiki_db.add_relationship(src, tgt, rtype, source_chapter=rel.get('source_chapter'))
+                    imported += 1
+            except Exception as e:
+                logger.warning(f"导入关系 {src}->{tgt} 失败: {e}")
+        return jsonify({"success": True, "imported": imported})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/api/llm/review-relations', methods=['GET', 'POST'])

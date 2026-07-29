@@ -2325,7 +2325,6 @@ if (data.relations.length === 0) {
             const removed = rr.removed || [];
             const entities = rr.entities || [];
             if (!confirm(`确认应用精筛结果？\n删除 ${removed.length} 个无效实体\n更新 ${entities.length} 个实体的分类`)) return;
-            if (!confirm(`确认应用精筛结果？\n删除 ${removed.length} 个无效实体\n更新 ${entities.length} 个实体的分类`)) return;
             try {
                 const res = await fetch('/api/llm/apply-refine', {
                     method: 'POST',

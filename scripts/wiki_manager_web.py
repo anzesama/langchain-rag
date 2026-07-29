@@ -2011,6 +2011,11 @@ if (data.relations.length === 0) {
 
             const W = container.offsetWidth || 728, H = container.offsetHeight || 600;
 
+            if (filtered.length === 0) {
+                container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:'+H+'px;color:#999;font-size:16px;">暂无已连接的节点<br><small>请先导入关系或取消勾选「仅已连接」</small></div>';
+                return;
+            }
+
             // 节点位置
             graphPositions = filtered.map(function(e, i) {
                 return {
@@ -2192,7 +2197,7 @@ if (data.relations.length === 0) {
                 if (data.success && data.sources) {
                     const sel = document.getElementById('source-select');
                     sel.innerHTML = '<option value="">-- 选择来源文件 --</option>' +
-                        data.sources.map(s => `<option value="${s}">${s}</option>`).join('');
+                        data.sources.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)} (实体: ${s.entities}, chunks: ${s.chunks})</option>`).join('');
                 }
             } catch (e) { console.error('加载来源失败:', e); }
         }
@@ -3082,14 +3087,19 @@ def search_knowledge():
 
 @app.route('/api/sources')
 def list_sources():
-    """返回所有已导入文档的来源列表"""
+    """返回所有已导入文档的来源列表（含实体数和 chunk 数）"""
     conn = get_db_connection()
     try:
         rows = conn.execute(
-            "SELECT DISTINCT source FROM chunks ORDER BY source"
+            """SELECT DISTINCT source FROM chunks ORDER BY source"""
         ).fetchall()
-        sources = [row['source'] for row in rows]
-        return jsonify({"success": True, "sources": sources})
+        result = []
+        for row in rows:
+            source = row['source']
+            ec = conn.execute('SELECT COUNT(*) FROM entities WHERE source_chapter = ?', (source,)).fetchone()[0]
+            cc = conn.execute('SELECT COUNT(*) FROM chunks WHERE source = ?', (source,)).fetchone()[0]
+            result.append({"name": source, "entities": ec, "chunks": cc})
+        return jsonify({"success": True, "sources": result})
     finally:
         conn.close()
 

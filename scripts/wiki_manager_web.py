@@ -2256,8 +2256,9 @@ if (data.relations.length === 0) {
                         r.removed.forEach(e => { html += `<li style="color: #cf1322;">${escapeHtml(e.name||'?')}</li>`; });
                         html += '</ul>';
                     }
-                    // 应用按钮 — 删除标记实体 + 更新类型
-                    html += `<div style="margin-top: 16px;"><button class="btn btn-success" onclick="applyRefineResult('${escapeHtml(source)}', JSON.stringify({entities: ${JSON.stringify(r.entities)}, removed: ${JSON.stringify(r.removed)}}))">应用精筛结果（删除无效实体+更新类型）</button><span style="margin-left: 8px; color: #999; font-size: 13px;">保留 ${r.entities.length} 个，删除 ${r.removed.length} 个</span></div>`;
+                    // 存到全局变量，按钮点一下从变量读
+                    window.__refineResult = { source: source_val, entities: r.entities, removed: r.removed || [] };
+                    html += `<div style="margin-top: 16px;"><button class="btn btn-success" onclick="applyRefineResult()">应用精筛结果（删除无效实体+更新类型）</button><span style="margin-left: 8px; color: #999; font-size: 13px;">保留 ${r.entities.length} 个，删除 ${(r.removed||[]).length} 个</span></div>`;
                     html += '</div>';
                     content.innerHTML = html;
                 } else {
@@ -2318,10 +2319,12 @@ if (data.relations.length === 0) {
             } catch (e) { showToast('导入失败: ' + e.message, 'error'); }
         }
 
-        async function applyRefineResult(source, resultJson) {
-            const result = JSON.parse(resultJson);
-            const removed = result.removed || [];
-            const entities = result.entities || [];
+        async function applyRefineResult() {
+            const rr = window.__refineResult;
+            if (!rr) { showToast('无精筛结果', 'error'); return; }
+            const removed = rr.removed || [];
+            const entities = rr.entities || [];
+            if (!confirm(`确认应用精筛结果？\n删除 ${removed.length} 个无效实体\n更新 ${entities.length} 个实体的分类`)) return;
             if (!confirm(`确认应用精筛结果？\n删除 ${removed.length} 个无效实体\n更新 ${entities.length} 个实体的分类`)) return;
             try {
                 const res = await fetch('/api/llm/apply-refine', {

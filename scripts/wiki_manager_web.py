@@ -179,10 +179,14 @@ def call_llm(prompt: str, max_tokens: int = 2000) -> str:
                 else:
                     # 重试仍然空 — 从 reasoning_content 提取 JSON
                     rc = msg["reasoning_content"]
-                    m = re.search(r'\{[^{}]*\{[^{}]*\}.*\}', rc, re.DOTALL)
-                    if m:
-                        content = m.group()
-                    else:
+                    logger.info(f"LLM attempt {attempt}: 二次为空，reasoning={len(rc)}字，提取 JSON")
+                    # 找到最后一个完整的 JSON 对象
+                    last_brace = rc.rfind('}')
+                    if last_brace > 0:
+                        first_brace = rc.rfind('{', 0, last_brace)
+                        if first_brace >= 0:
+                            content = rc[first_brace:last_brace+1]
+                    if not content:
                         raise ValueError(f"LLM 连续返回空内容，reasoning={len(rc)}字")
 
             if not content:

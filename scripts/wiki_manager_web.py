@@ -3147,22 +3147,21 @@ def apply_refine():
     deleted_count = 0
     updated_count = 0
     try:
-        # 删除无效实体
+        # 删除无效实体 — 使用 id 精确定位
         for ent in removed:
-            name = ent.get('name', '').strip()
-            if name:
-                cur = conn.execute('DELETE FROM entities WHERE name = ? AND source_chapter = ?', (name, source))
+            eid = ent.get('id')
+            if eid:
+                # 先删除关联关系
+                conn.execute('DELETE FROM relationships WHERE source_entity_id = ? OR target_entity_id = ?', (eid, eid))
+                cur = conn.execute('DELETE FROM entities WHERE id = ?', (eid,))
                 deleted_count += cur.rowcount
 
-        # 更新保留实体的类型
+        # 更新保留实体的类型 — 使用 id 精确定位
         for ent in entities:
-            name = ent.get('name', '').strip()
+            eid = ent.get('id')
             new_type = ent.get('type', ent.get('recommended_type', '')).strip()
-            if name and new_type:
-                cur = conn.execute(
-                    'UPDATE entities SET type = ? WHERE name = ? AND source_chapter = ?',
-                    (new_type, name, source)
-                )
+            if eid and new_type:
+                cur = conn.execute('UPDATE entities SET type = ? WHERE id = ?', (new_type, eid))
                 updated_count += cur.rowcount
 
         conn.commit()

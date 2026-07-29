@@ -146,8 +146,7 @@ def call_llm(prompt: str, max_tokens: int = 2000) -> str:
             {"role": "user", "content": prompt}
         ],
         "temperature": temp,
-        "max_tokens": max_tok,
-        "reasoning_effort": "disabled"  # GLM-4 Flash 禁用 reasoning 确保返回 content
+        "max_tokens": max_tok
     }
 
     for attempt in range(3):
@@ -162,10 +161,20 @@ def call_llm(prompt: str, max_tokens: int = 2000) -> str:
             body = resp.json()
             msg = body["choices"][0]["message"]
             content = msg.get("content") or ""
-            # GLM 可能把全部 token 用在了 reasoning，content 为空
+
+            # GLM-4 Flash reasoning 模式: content 可能为空，内容在 reasoning_content
             if not content and msg.get("reasoning_content"):
-                content = msg.get("reasoning_content", "")
-                logger.info("LLM: content 为空，使用 reasoning_content 降级")
+                rc = msg.get("reasoning_content", "")
+                logger.info(f"LLM: content为空，reasoning_content={len(rc)}字")
+                # 从 reasoning 文本中提取 JSON 块
+                import re as _re
+                m = _re.search(r'\{[^{}]*\{[^{}]*\}.*\}', rc, _re.DOTALL)
+                if m:
+                    content = m.group()
+                else:
+                    # 找不到 JSON — 取最后一段完整推理作 fallback
+                    content = rc
+
             if not content:
                 raise ValueError(f"LLM 返回空内容: {json.dumps(msg, ensure_ascii=False)[:200]}")
             return content
@@ -178,6 +187,45 @@ def call_llm(prompt: str, max_tokens: int = 2000) -> str:
                 raise
             time.sleep(1)
     raise RuntimeError("LLM 调用失败")
+
+
+def _parse_llm_json(raw: str) -> dict:
+    """解析 LLM 返回的 JSON，处理常见的包装问题"""
+    raw = raw.strip()
+    if not raw:
+        raise ValueError("LLM 返回空内容")
+
+    # 尝试直接解析
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # 提取 ```json ... ``` 代码块
+    m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', raw, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # 提取第一个 {...} 对象
+    m = re.search(r'\{[^{}]*\{[^{}]*\}.*\}', raw, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            pass
+
+    # 简单 {...} 对象
+    m = re.search(r'\{.*\}', raw, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"无法解析 LLM 响应: {raw[:300]}")
 
 
 # HTML 模板
@@ -3217,7 +3265,7 @@ def list_sources():
 
 @app.route('/api/llm/refine-and-extract', methods=['POST'])
 def refine_and_extract():
-    """合并 Prompt 一键精炼：预过滤 + LLM 一次调用完成精筛+关系提取"""
+    """合并 Prompt 一键精炼：预过滤 + 两段 LLM 调用（精筛 + 关系提取）"""
     from rag_core.llm_refiner import prefilter_entities, build_combined_prompt
     data = request.json
     source = data.get('source', '').strip()
@@ -3226,13 +3274,11 @@ def refine_and_extract():
 
     conn = get_db_connection()
     try:
-        # 获取实体（只取 source=source 的，不包括 regex）
         entity_rows = conn.execute(
             "SELECT id, name, type, source_chapter FROM entities WHERE source_chapter = ? OR source_chapter = 'regex'",
             (source,)
         ).fetchall()
         all_entities = [dict(row) for row in entity_rows]
-        # chunks 文本
         chunk_rows = conn.execute(
             "SELECT text_content FROM chunks WHERE source = ?",
             (source,)
@@ -3248,41 +3294,68 @@ def refine_and_extract():
     if not candidates:
         return jsonify({"success": False, "error": "预过滤后无有效候选实体"})
 
-    # 2. 构建合并 Prompt + 调用 LLM（max_tokens 足够大让 content 有值）
-    prompt = build_combined_prompt(chunks_text, candidates)
-    # 追加 JSON 强制约束
-    prompt += "\n\n### 严格要求\n1. 整个回复只能是一个 JSON 对象\n2. 不要包含任何解释、思考过程、markdown 语法\n3. 不要写 ```json 或其他代码块标记\n4. 直接输出 {\"valid\":[...],\"removed\":[...],\"relations\":[...]}"
+    # 2. 第一段：精筛实体（简洁 Prompt，确保 content 有值）
+    entity_items = [{"id": e.get("id", ""), "name": e.get("name", ""), "type": e.get("type", "未知")} for e in candidates]
+    entities_json = json.dumps(entity_items, ensure_ascii=False)
+    refine_prompt = f"""你是一个知识图谱实体清洗专家。判断每个候选实体是否有效，无效的需标记删除。
+
+## 删除规则（满足任一即标记为 removed）
+- 完整句子（长度>20字且含虚词"的/了/在/是/和/与"）
+- 单字或无意义词（如"机""文""本"）
+- 包含标点符号
+- 泛指词（"本文""该书""我们""它们"）
+- 2-3字无意义英文缩写（df/pd/np/id/col/val）
+
+## 保留规则
+- 技术概念/算法/工具/指标/方法/框架
+- 在原文中出现且有独立语义，长度 2-20 字
+
+## 候选实体（JSON）
+{entities_json}
+
+只返回 JSON，不要任何解释：{{"valid":[{{"id":"...","name":"...","recommended_type":"类型"}}],"removed":[{{"id":"...","name":"..."}}]}}"""
+
     try:
-        llm_output = call_llm(prompt, max_tokens=8000)
-        logger.info(f"LLM refine-and-extract: output_len={len(llm_output)}, first200={llm_output[:200]}")
-        if not llm_output or not llm_output.strip():
-            return jsonify({"success": False, "error": "LLM 返回空内容，请重试或减少候选实体量"})
-        result = json.loads(llm_output)
-        valid = result.get('valid', [])
-        removed = result.get('removed', [])
-        relations = result.get('relations', [])
-    except json.JSONDecodeError:
-        # 尝试提取 JSON
-        m = re.search(r'\{.*\}', llm_output, re.DOTALL)
-        if m:
-            try:
-                result = json.loads(m.group())
-                valid = result.get('valid', [])
-                removed = result.get('removed', [])
-                relations = result.get('relations', [])
-            except json.JSONDecodeError:
-                return jsonify({"success": False, "error": "LLM 返回格式无法解析"})
-        else:
-            return jsonify({"success": False, "error": "LLM 返回格式错误"})
+        raw = call_llm(refine_prompt, max_tokens=4000)
+        logger.info(f"refine-and-extract step1: raw_len={len(raw)}")
+        refine_result = _parse_llm_json(raw)
+        valid_entities = refine_result.get('valid', [])
+        removed_entities = refine_result.get('removed', [])
     except Exception as e:
-        return jsonify({"success": False, "error": f"LLM 处理失败: {str(e)}"})
+        return jsonify({"success": False, "error": f"实体精筛失败: {str(e)}"})
+
+    # 3. 第二段：关系提取（用精筛后的实体）
+    valid_names = [e.get('name', '') for e in valid_entities if e.get('name')]
+    if valid_names:
+        relation_prompt = f"""你是一个知识图谱关系提取专家。从给定的文本中提取实体间的语义关系。
+
+## 实体列表（已精筛）
+{', '.join(valid_names[:50])}
+
+## 文本片段
+{chunks_text[:4000]}
+
+## 关系类型
+使用、对比、改进、属于、开发、评估、包含、提出、适用、关联
+
+只返回 JSON：{{"relations":[{{"source":"实体A","target":"实体B","rel_type":"关系类型","evidence":"依据"}}]}}"""
+        try:
+            rel_raw = call_llm(relation_prompt, max_tokens=3000)
+            logger.info(f"refine-and-extract step2: rel_raw_len={len(rel_raw)}")
+            rel_result = _parse_llm_json(rel_raw)
+            relations = rel_result.get('relations', [])
+        except Exception as e:
+            logger.warning(f"关系提取失败（非致命）: {e}")
+            relations = []
+    else:
+        relations = []
 
     return jsonify({
         "success": True,
-        "has_entity_changes": bool(valid or removed),
+        "has_entity_changes": bool(valid_entities or removed_entities),
         "has_relations": bool(relations),
-        "valid": valid,
-        "removed": removed,
+        "valid": valid_entities,
+        "removed": removed_entities,
         "relations": relations,
         "candidate_count": len(candidates),
         "message": "预览成功，请确认后应用"

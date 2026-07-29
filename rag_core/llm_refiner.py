@@ -41,6 +41,78 @@ DOMAIN_CONFIGS = {
 }
 
 
+
+
+# ============================================================
+# 预过滤工具函数
+# ============================================================
+
+def prefilter_entities(entities: List[Dict], chunks_text: str, max_count: int = 150) -> List[Dict]:
+    """
+    4级优先级预过滤：减少发给 LLM 的实体数量
+    优先级: 0=核心类型 > 1=文档-word ™ chunks > 2=regex ™ chunks > 3=regex 未命中
+    """
+    stopwords = {'本文', '该书', '我们', '它们', '其中', '以下', '例如', '对于', '可以', '进行', '一个', '不是', '已经'}
+    core_types = {'算法', '模型', '框架', '工具', '指标', '概念'}
+    candidates = []
+    for e in entities:
+        name = e.get('name', '').strip()
+        if not name or len(name) < 2 or len(name) > 20:
+            continue
+        if name in stopwords:
+            continue
+        in_chunks = name in chunks_text
+        is_regex = e.get('source_chapter') == 'regex'
+        is_core = e.get('type') in core_types
+
+        if is_core:
+            priority = 0
+        elif not is_regex and in_chunks:
+            priority = 1
+        elif is_regex and in_chunks:
+            priority = 2
+        else:
+            priority = 3
+        candidates.append((priority, len(name), e))
+
+    candidates.sort(key=lambda x: (x[0], x[1]))
+    return [e for _, _, e in candidates[:max_count]]
+
+
+def build_combined_prompt(chunks_text: str, entities: List[Dict]) -> str:
+    """构建合并 Prompt：同时精筛实体 + 提取关系"""
+    entity_items = [{"id": e.get("id", ""), "name": e.get("name", ""), "type": e.get("type", "未知")} for e in entities]
+    entities_json = json.dumps(entity_items, ensure_ascii=False, indent=2)
+    return f"""你是一个知识图谱构建专家。给定一段原文和候选实体列表，请完成两项任务：
+
+## 任务1：实体筛选与分类
+判断每个实体是否有效（技术概念/算法/工具/指标/方法/框架/数据集/人物等），为有效实体推荐类型。
+无效实体需标记删除（完整句子、单字、泛指词、含标点符号的短语等）。
+
+## 任务2：关系抽取
+在**有效的实体**之间提取语义关系。
+- 只提取原文中明确陈述的关系
+- 关系类型从以下选择：使用、对比、改进、属于、开发、评估、包含、提出、适用、关联
+- 每条关系必须附上一句原文作为证据（不超过30字）
+
+## 输入
+### 原文片段
+{chunks_text[:6000]}
+
+### 候选实体列表（已过滤）
+{entities_json}
+
+## 输出格式（严格JSON）
+{{
+  "valid": [{{"id": "实体ID", "name": "实体名称", "recommended_type": "类型"}}],
+  "removed": [{{"id": "实体ID", "name": "实体名称"}}],
+  "relations": [
+    {{"source": "实体A名称", "target": "实体B名称", "rel_type": "关系类型", "evidence": "原文依据"}}
+  ]
+}}
+只返回JSON，不要额外文字。"""
+
+
 class LLMRefiner:
     """LLM 精炼实体 + 提取关系"""
 

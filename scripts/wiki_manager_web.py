@@ -653,7 +653,7 @@ HTML_TEMPLATE = """
                     </select>
                     <button class="btn btn-purple" onclick="runRefineEntities()" style="padding: 8px 16px;">精筛实体</button>
                     <button class="btn btn-primary" onclick="runExtractRelations()" style="padding: 8px 16px;">提取关系</button>
-                    <button class="btn btn-success" onclick="runRefineAll()" style="padding: 8px 16px; background: linear-gradient(135deg, #11998e, #38ef7d); border: none;">一键精炼</button>
+                    <button class="btn btn-success" onclick="runRefineAndExtract()" style="padding: 8px 20px; background: linear-gradient(135deg, #11998e, #38ef7d); border: none;">一键精炼（合并）</button>
                 </div>
             </div>
 
@@ -2273,53 +2273,103 @@ if (data.relations.length === 0) {
             } catch (e) { content.innerHTML = `<div class="empty-state">请求失败: ${escapeHtml(e.message)}</div>`; }
         }
 
-        async function runRefineAll() {
+        // 全局变量存储预览数据
+        let pendingChanges = null;
+
+        async function runRefineAndExtract() {
             const source = document.getElementById('source-select').value;
             if (!source) { showToast('请先选择来源文件', 'error'); return; }
             const content = document.getElementById('llm-results');
-            content.innerHTML = '<div class="empty-state"><span class="loading"></span> 一键精炼中: 先精筛实体...</div>';
+            content.innerHTML = '<div class="empty-state"><span class="loading"></span> 正在执行一键精炼（LLM 处理中，请稍候）...</div>';
             try {
-                const res = await fetch('/api/llm/refine-all', {
+                const res = await fetch('/api/llm/refine-and-extract', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({source})
                 });
                 const data = await res.json();
-                if (data.success) {
-                    const r = data.result;
-                    let html = `<div style="line-height: 1.8;"><h3 style="color: #1890ff; margin-bottom: 15px;">一键精炼结果</h3>`;
-                    html += `<p>实体: ${r.entity_count}→${r.refined_count} (删除${r.removed_count}个)</p>`;
-                    html += `<p>关系: ${r.relation_count} 条</p>`;
-
-                    // 精筛结果
-                    if (r.removed_count > 0) {
-                        html += `<h4 style="color: #ff4d4f; margin: 8px 0;">删除的实体</h4><ul style="max-height: 150px; overflow-y: auto;">`;
-                        (r.removed_examples||[]).forEach(e => { html += `<li style="color: #cf1322;">${escapeHtml(e)}</li>`; });
-                        html += '</ul>';
-                    }
-
-                    // 关系
-                    if (r.relations && r.relations.length > 0) {
-                        html += '<h4 style="color: #52c41a; margin: 8px 0;">提取的关系</h4>';
-                        html += '<table style="width:100%;border-collapse:collapse;margin-top:10px;"><thead><tr style="background:#f5f5f5;"><th style="padding:6px;text-align:left;">源</th><th style="padding:6px;text-align:left;">关系</th><th style="padding:6px;text-align:left;">目标</th></tr></thead><tbody>';
-                        r.relations.forEach(rel => {
-                            html += `<tr><td style="padding:6px;border-bottom:1px solid #eee;">${escapeHtml(rel.source)}</td><td style="padding:6px;border-bottom:1px solid #eee;color:#1890ff;">${escapeHtml(rel.type)}</td><td style="padding:6px;border-bottom:1px solid #eee;">${escapeHtml(rel.target)}</td></tr>`;
-                        });
-                        html += '</tbody></table>';
-                        html += `<button class="btn btn-primary" onclick="importRelations(${JSON.stringify(r.relations)})" style="margin-top:12px;">导入所有关系</button>`;
-                    }
-
-                    // 应用精筛按钮
-                    window.__refineResult = { source: source, entities: r.refined, removed: r.removed_all };
-                    if (r.removed_count > 0) {
-                        html += `<br><button class="btn btn-success" onclick="applyRefineResult()" style="margin-top:12px;">应用精筛结果（删除${r.removed_count}个无效实体）</button>`;
-                    }
-                    html += '</div>';
-                    content.innerHTML = html;
-                } else {
-                    content.innerHTML = `<div class="empty-state">一键精炼失败: ${escapeHtml(data.error)}</div>`;
+                if (!data.success) {
+                    content.innerHTML = `<div class="empty-state">精炼失败: ${escapeHtml(data.error)}</div>`;
+                    return;
                 }
-            } catch (e) { content.innerHTML = `<div class="empty-state">请求失败: ${escapeHtml(e.message)}</div>`; }
+                pendingChanges = data;
+                renderPreview(data);
+            } catch (e) {
+                content.innerHTML = `<div class="empty-state">请求失败: ${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        function renderPreview(data) {
+            const content = document.getElementById('llm-results');
+            let html = `<div style="line-height:1.8;"><h3 style="color:#1890ff;">精炼预览</h3>`;
+            html += `<p>来源: ${escapeHtml(document.getElementById('source-select').value)}</p>`;
+            html += `<p>候选实体数: ${data.candidate_count || 0}</p>`;
+            html += `<p>有效实体: ${data.valid ? data.valid.length : 0}</p>`;
+            html += `<p>删除实体: ${data.removed ? data.removed.length : 0}</p>`;
+            if (data.has_relations) {
+                html += `<p>关系提取: ${data.relations ? data.relations.length : 0} 条</p>`;
+            } else {
+                html += `<p style="color:#faad14;">关系提取: 未返回（可忽略）</p>`;
+            }
+            // 有效实体详情
+            if (data.valid && data.valid.length > 0) {
+                html += `<details><summary>查看有效实体详情</summary><ul>`;
+                data.valid.forEach(v => html += `<li>${escapeHtml(v.name)} → ${escapeHtml(v.recommended_type||'')}</li>`);
+                html += `</ul></details>`;
+            }
+            // 待删除
+            if (data.removed && data.removed.length > 0) {
+                html += `<details><summary>查看待删除实体</summary><ul>`;
+                data.removed.forEach(v => html += `<li>${escapeHtml(v.name)}</li>`);
+                html += `</ul></details>`;
+            }
+            // 关系
+            if (data.has_relations && data.relations && data.relations.length > 0) {
+                html += `<details><summary>查看关系列表</summary><ul>`;
+                data.relations.forEach(r => html += `<li>${escapeHtml(r.source)} → ${escapeHtml(r.rel_type)} → ${escapeHtml(r.target)}</li>`);
+                html += `</ul></details>`;
+            }
+            // 确认按钮
+            html += `<div style="margin-top:16px;">`;
+            html += `<button class="btn btn-success" onclick="applyChanges(true)" style="margin-right:10px;">应用全部（实体+关系）</button>`;
+            html += `<button class="btn btn-primary" onclick="applyChanges(false)">仅应用实体变更</button>`;
+            html += `<button class="btn btn-secondary" onclick="cancelChanges()" style="margin-left:10px;">取消</button>`;
+            html += `</div></div>`;
+            content.innerHTML = html;
+        }
+
+        async function applyChanges(applyRelations) {
+            if (!pendingChanges) return;
+            const source = document.getElementById('source-select').value;
+            try {
+                const res = await fetch('/api/llm/apply-changes', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        source: source,
+                        valid: pendingChanges.valid || [],
+                        removed: pendingChanges.removed || [],
+                        relations: pendingChanges.relations || [],
+                        apply_relations: applyRelations
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`应用完成: 删除${data.deleted}个, 更新${data.updated}个, 导入${data.imported_relations}条关系`, 'success');
+                    pendingChanges = null;
+                    loadStats();
+                    document.getElementById('llm-results').innerHTML = '<div class="empty-state">变更已应用</div>';
+                } else {
+                    showToast('应用失败: ' + data.error, 'error');
+                }
+            } catch (e) {
+                showToast('应用失败: ' + e.message, 'error');
+            }
+        }
+
+        function cancelChanges() {
+            pendingChanges = null;
+            document.getElementById('llm-results').innerHTML = '<div class="empty-state">已取消</div>';
         }
 
         async function runExtractRelations() {
@@ -3154,9 +3204,10 @@ def list_sources():
         conn.close()
 
 
-@app.route('/api/llm/refine-all', methods=['POST'])
-def refine_all():
-    """一键精炼：精筛实体 + 提取关系"""
+@app.route('/api/llm/refine-and-extract', methods=['POST'])
+def refine_and_extract():
+    """合并 Prompt 一键精炼：预过滤 + LLM 一次调用完成精筛+关系提取"""
+    from rag_core.llm_refiner import prefilter_entities, build_combined_prompt
     data = request.json
     source = data.get('source', '').strip()
     if not source:
@@ -3164,64 +3215,124 @@ def refine_all():
 
     conn = get_db_connection()
     try:
-        # 获取实体（文档+regex）
+        # 获取实体（只取 source=source 的，不包括 regex）
         entity_rows = conn.execute(
-            "SELECT id, name, type, properties FROM entities WHERE source_chapter = ? OR source_chapter = 'regex'",
+            "SELECT id, name, type, source_chapter FROM entities WHERE source_chapter = ? OR source_chapter = 'regex'",
             (source,)
         ).fetchall()
-        entities = [dict(row) for row in entity_rows]
-
-        # 获取 chunks
+        all_entities = [dict(row) for row in entity_rows]
+        # chunks 文本
         chunk_rows = conn.execute(
-            'SELECT chunk_id, text_content as chunk_text FROM chunks WHERE source = ?',
+            "SELECT text_content FROM chunks WHERE source = ?",
             (source,)
         ).fetchall()
-        chunks = [dict(row) for row in chunk_rows]
+        chunks_text = "\n\n".join([row['text_content'] for row in chunk_rows])
+        if not all_entities or not chunks_text:
+            return jsonify({"success": False, "error": "该来源无实体或无文本"})
     finally:
         conn.close()
 
-    if not entities and not chunks:
-        return jsonify({"success": False, "error": f"source '{source}' 无数据"})
+    # 1. 预过滤
+    candidates = prefilter_entities(all_entities, chunks_text, max_count=150)
+    if not candidates:
+        return jsonify({"success": False, "error": "预过滤后无有效候选实体"})
 
-    # 获取 LLM 设置
-    settings = get_llm_settings()
-    refiner = LLMRefiner(
-        endpoint=settings.get('llm_endpoint', AGNES_API_BASE),
-        api_key=settings.get('llm_api_key', AGNES_API_KEY),
-        model=settings.get('llm_model', 'agnes-2.0-flash'),
-        domain=settings.get('domain_type', 'machine-learning'),
-    )
-
-    # 如果实体太多，截取前200个（LLM 也要分批，避免太多）
-    MAX_REFINE_ENTITIES = 200
-    full_entities = entities
-    if len(entities) > MAX_REFINE_ENTITIES:
-        entities = entities[:MAX_REFINE_ENTITIES]
-        logger.info(f"精筛实体截取: {len(full_entities)} → {MAX_REFINE_ENTITIES}")
-
-    # Step 1: 精筛实体
-    entity_count = len(full_entities)
-    refine_result = refiner.refine_entities(entities, chunks)
-    refined = refine_result.get('entities', [])
-    removed = refine_result.get('removed', [])
-
-    # Step 2: 提取关系（用精筛后的实体）
-    relation_result = refiner.extract_relations(chunks, refined)
-    relations = relation_result.get('relations', [])
+    # 2. 构建合并 Prompt + 调用 LLM
+    prompt = build_combined_prompt(chunks_text, candidates)
+    try:
+        llm_output = call_llm(prompt, max_tokens=4000)
+        result = json.loads(llm_output)
+        valid = result.get('valid', [])
+        removed = result.get('removed', [])
+        relations = result.get('relations', [])
+    except json.JSONDecodeError:
+        # 尝试提取 JSON
+        m = re.search(r'\{.*\}', llm_output, re.DOTALL)
+        if m:
+            try:
+                result = json.loads(m.group())
+                valid = result.get('valid', [])
+                removed = result.get('removed', [])
+                relations = result.get('relations', [])
+            except json.JSONDecodeError:
+                return jsonify({"success": False, "error": "LLM 返回格式无法解析"})
+        else:
+            return jsonify({"success": False, "error": "LLM 返回格式错误"})
+    except Exception as e:
+        return jsonify({"success": False, "error": f"LLM 处理失败: {str(e)}"})
 
     return jsonify({
         "success": True,
-        "result": {
-            "entity_count": entity_count,
-            "refined_count": len(refined),
-            "removed_count": len(removed),
-            "removed_examples": [{"id": e.get('id'), "name": e.get('name')} for e in removed[:10]],
-            "refined": refined,
-            "removed_all": removed,
-            "relations": relations,
-            "relation_count": len(relations),
-        }
+        "has_entity_changes": bool(valid or removed),
+        "has_relations": bool(relations),
+        "valid": valid,
+        "removed": removed,
+        "relations": relations,
+        "candidate_count": len(candidates),
+        "message": "预览成功，请确认后应用"
     })
+
+
+@app.route('/api/llm/apply-changes', methods=['POST'])
+def apply_changes():
+    """应用精筛+关系提取的变更"""
+    data = request.json
+    source = data.get('source', '').strip()
+    valid = data.get('valid', [])
+    removed = data.get('removed', [])
+    relations = data.get('relations', [])
+    apply_relations = data.get('apply_relations', True)
+    if not source:
+        return jsonify({"success": False, "error": "缺少 source 参数"})
+
+    conn = get_db_connection()
+    deleted_count = 0
+    updated_count = 0
+    try:
+        for ent in removed:
+            eid = ent.get('id')
+            if eid:
+                cur = conn.execute('DELETE FROM entities WHERE id = ?', (eid,))
+                deleted_count += cur.rowcount
+        for ent in valid:
+            eid = ent.get('id')
+            new_type = ent.get('recommended_type', '').strip()
+            if eid and new_type:
+                cur = conn.execute('UPDATE entities SET type = ? WHERE id = ?', (new_type, eid))
+                updated_count += cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+
+    # 导入关系
+    imported_count = 0
+    if apply_relations and relations:
+        wiki_db = WikiDB(str(DB_PATH))
+        wiki_db.init_db()
+        for rel in relations:
+            src = rel.get('source', '').strip()
+            tgt = rel.get('target', '').strip()
+            rtype = rel.get('rel_type', '关联')
+            if src and tgt:
+                try:
+                    wiki_db.add_relationship(src, tgt, rtype, source_chapter=source)
+                    imported_count += 1
+                except Exception as e:
+                    logger.warning(f"add_relationship failed ({src}->{tgt}): {e}")
+
+    return jsonify({
+        "success": True,
+        "deleted": deleted_count,
+        "updated": updated_count,
+        "imported_relations": imported_count
+    })
+
+
+@app.route('/api/llm/refine-all', methods=['POST'])
+def refine_all():
+    # 保留旧端点兼容
+    data = request.json
+    return jsonify({"success": False, "error": "请使用 /api/llm/refine-and-extract 新端点"})
 
 
 @app.route('/api/llm/refine-entities', methods=['POST'])

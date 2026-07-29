@@ -84,28 +84,33 @@ class LLMRefiner:
 }}"""
 
     def _build_relation_prompt(self, chunks: list, entities: list) -> str:
-        """构建关系提取 prompt"""
+        """构建关系提取 prompt — 限制 chunk 数量防止超 token"""
+        # 限制 chunk 数量避免 prompt 太大
+        MAX_CHUNKS = 15
+        selected = chunks[:MAX_CHUNKS] if len(chunks) > MAX_CHUNKS else chunks
         chunk_text = '\n\n'.join(
-            f"[chunk {i}] {c.get('chunk_text', c.get('page_content', ''))}"
-            for i, c in enumerate(chunks[:100])
+            f"[chunk {i}] {c.get('chunk_text', c.get('page_content', ''))[:300]}"
+            for i, c in enumerate(selected)
         )
-        entity_names = [e['name'] for e in entities if e.get('name')]
-        entity_list = ', '.join(entity_names[:200])
+        entity_names = [e['name'] for e in entities if e.get('name') and len(e['name'].strip()) >= 2]
+        entity_list = ', '.join(entity_names[:80])
 
         config = self.config
-        return f"""你是知识图谱关系提取专家。从以下文本中提取 [{config['label']}] 领域的实体间关系。
+        return f"""你是知识图谱关系提取专家。从以下 [{config['label']}] 领域的技术文本中提取实体和关系。
 
-【关系类型】
-{', '.join(config['rel_types'])}
-
-【已知实体列表】
-{entity_list}
-
-【上下文 chunks】
+【文本 chunks】
 {chunk_text}
 
-只提取在文本中明确出现的关系，不要猜测。每个关系的 source 和 target 都必须来自已知实体列表。
-返回 JSON（只返回 JSON，不要其他）：{{
+【参考实体（供参考，可忽略）】
+{entity_list}
+
+要求：
+1. 从文本中提取真正的技术概念实体（中文优先，长度 2-15字）
+2. 关系类型：{', '.join(config['rel_types'])}
+3. 只提取文本中明确出现的关系，不要臆测
+4. 每个 source/target 必须是你提取的实体名
+
+返回 JSON（只返回 JSON）：{{
   "relations": [
     {{"source": "entity1", "target": "entity2", "type": "关系类型", "description": "简要说明"}}
   ],
@@ -223,10 +228,14 @@ class LLMRefiner:
             result = self._parse_json(raw)
             relations = result.get('relations', [])
 
-            # filter: source/target must be in entity set
-            names = {e['name'] for e in entities if e.get('name')}
+            # 基本过滤：source/target 非空且不是垃圾单词
+            weak = {'the','a','an','is','it','data','text','code','file','value','test','type','key','list','item'}
             valid = [r for r in relations
-                     if r.get('source') in names and r.get('target') in names]
+                     if r.get('source') and r.get('target')
+                     and len(r.get('source','').strip()) >= 2
+                     and len(r.get('target','').strip()) >= 2
+                     and r.get('source','').strip().lower() not in weak
+                     and r.get('target','').strip().lower() not in weak]
 
             logger.info(f"[LLM 关系提取]: {len(valid)}/{len(relations)} 有效")
             return {"relations": valid, "count": len(valid)}

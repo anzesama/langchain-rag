@@ -15,6 +15,7 @@ Wiki 知识图谱管理 Web 界面（完整版 + 知识图谱 + LLM）
 import sys
 import sqlite3
 import json
+import re
 import shutil
 import logging
 import time
@@ -132,7 +133,7 @@ def call_llm(prompt: str, max_tokens: int = 2000) -> str:
     base_url = settings.get('llm_endpoint', AGNES_API_BASE).rstrip('/')
     model = settings.get('llm_model', 'agnes-2.0-flash')
     temp = float(settings.get('llm_temperature', '0.1'))
-    max_tok = int(settings.get('llm_max_tokens', str(max_tokens)))
+    max_tok = max(int(settings.get('llm_max_tokens', str(max_tokens))), max_tokens)
 
     headers = {
         "Content-Type": "application/json",
@@ -157,7 +158,16 @@ def call_llm(prompt: str, max_tokens: int = 2000) -> str:
                 timeout=120
             )
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            body = resp.json()
+            msg = body["choices"][0]["message"]
+            content = msg.get("content") or ""
+            # GLM 可能把全部 token 用在了 reasoning，content 为空
+            if not content and msg.get("reasoning_content"):
+                content = msg.get("reasoning_content", "")
+                logger.info("LLM: content 为空，使用 reasoning_content 降级")
+            if not content:
+                raise ValueError(f"LLM 返回空内容: {json.dumps(msg, ensure_ascii=False)[:200]}")
+            return content
         except requests.exceptions.Timeout:
             if attempt == 2:
                 raise
@@ -3241,6 +3251,9 @@ def refine_and_extract():
     prompt = build_combined_prompt(chunks_text, candidates)
     try:
         llm_output = call_llm(prompt, max_tokens=4000)
+        logger.info(f"LLM refine-and-extract: output_len={len(llm_output)}, first100={llm_output[:100]}")
+        if not llm_output or not llm_output.strip():
+            return jsonify({"success": False, "error": "LLM 返回空内容，请重试或减少候选实体量"})
         result = json.loads(llm_output)
         valid = result.get('valid', [])
         removed = result.get('removed', [])

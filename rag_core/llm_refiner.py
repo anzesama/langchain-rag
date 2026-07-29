@@ -117,7 +117,7 @@ class LLMRefiner:
   "count": N
 }}"""
 
-    def _call_api(self, messages: list, temperature: float = 0.1, max_tokens: int = 3000) -> str:
+    def _call_api(self, messages: list, temperature: float = 0.1, max_tokens: int = 2000) -> str:
         """调用 OpenAI-compatible API"""
         url = f"{self.endpoint}/chat/completions"
         payload = {

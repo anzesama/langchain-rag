@@ -151,6 +151,7 @@ def call_llm(prompt: str, max_tokens: int = 2000) -> str:
 
     # 记录原始 prompt（用于重试）
     messages = data["messages"]
+    content_empty_retries = 0
 
     for attempt in range(3):
         try:
@@ -165,15 +166,24 @@ def call_llm(prompt: str, max_tokens: int = 2000) -> str:
             msg = body["choices"][0]["message"]
             content = msg.get("content") or ""
 
-            # GLM-4 Flash reasoning 模式: content 为空 → 追加强制消息
+            # GLM-4 Flash reasoning 模式: content 为空 → 只重试一次
             if not content and msg.get("reasoning_content"):
-                logger.info(f"LLM attempt {attempt}: content为空，reasoning={len(msg['reasoning_content'])}字，追加 JSON 要求")
-                # 在第一轮失败后，修改 messages 强制输出 JSON
-                data["messages"] = messages + [
-                    {"role": "assistant", "content": "(推理中)"},
-                    {"role": "user", "content": "你的上一次回复没有 JSON 内容。请直接输出 JSON，不要任何解释。"}
-                ]
-                continue
+                if content_empty_retries < 1:
+                    content_empty_retries += 1
+                    logger.info(f"LLM attempt {attempt}: content为空，追加强制 JSON 要求")
+                    data["messages"] = messages + [
+                        {"role": "assistant", "content": "(推理中)"},
+                        {"role": "user", "content": "你的上一次回复没有 JSON 内容。请直接输出 JSON，不要任何解释。"}
+                    ]
+                    continue
+                else:
+                    # 重试仍然空 — 从 reasoning_content 提取 JSON
+                    rc = msg["reasoning_content"]
+                    m = re.search(r'\{[^{}]*\{[^{}]*\}.*\}', rc, re.DOTALL)
+                    if m:
+                        content = m.group()
+                    else:
+                        raise ValueError(f"LLM 连续返回空内容，reasoning={len(rc)}字")
 
             if not content:
                 raise ValueError(f"LLM 返回空内容: {json.dumps(msg, ensure_ascii=False)[:200]}")

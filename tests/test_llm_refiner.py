@@ -28,7 +28,6 @@ def test_build_refine_prompt_novel_domain():
     prompt = r._build_refine_prompt(entities, chunks)
     assert '古月方源' in prompt
     assert '人物' in prompt
-    assert '小说' in prompt
 
 
 def test_build_relation_prompt():

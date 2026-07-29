@@ -99,43 +99,57 @@ class LLMRefiner:
         return valid, removed
 
     def _build_refine_prompt(self, entities: list, chunks: list) -> str:
-        """构建精筛实体 prompt"""
-        entity_text = '\n'.join(
-            f"- {e.get('name')} (类型: {e.get('type', '未分类')})"
+        """构建精筛实体 prompt（含 id + name + 类型 + 严格标准 + few-shot）"""
+        import json as _json
+        entity_items = [
+            {"id": e.get('id', ''), "name": e.get('name', ''),
+             "type": e.get('type', '未分类')}
             for e in entities
-        )
-        chunk_text = '\n\n'.join(
-            f"[Chunk {i}] {c.get('chunk_text', c.get('page_content', ''))}"
-            for i, c in enumerate(chunks[:5])
+        ]
+        entity_json = _json.dumps(entity_items, ensure_ascii=False, indent=2)
+
+        chunk_text = '\n'.join(
+            f"[Chunk {i}] {c.get('chunk_text', c.get('page_content', ''))[:300]}"
+            for i, c in enumerate(chunks[:3])
         ) if chunks else '(无上下文)'
 
         config = self.config
-        return f"""你是知识图谱审核专家。请审核以下 [{config['label']}] 领域的实体列表，标记无效实体应删除。
+        return f"""你是一个知识图谱实体清洗专家。对给定的候选实体进行筛选和分类。
 
-【删除标准 — 满足任一即标记 invalid】
-- 完整句子或句子片段（≥8字且包含"的/了/在/是"）
-- 单个汉字或两个无意义字符
-- 包含中文标点（。，、；：！？）
-- 指代性泛词：本文，本书，此处，这一章，用户手册
-- 纯数字、纯符号
-- 非技术性常见英文单词（the/and/for/it/is/has/import）
-- 2-3字英文缩写（如 df/pd/np/os/id/col/val/max/min）
-- 长度 < 2 字或 > 20 字
+## 输入说明
+每个实体包含：id（唯一标识）、name（名称）、type（当前类型）。
+同时附原文片段供参考。
 
-【有效类型】
-{', '.join(config['entity_types'])}
+## 判断规则
+1. **删除（标为 removed）** 如果实体：
+   - 是完整句子（长度>20字且含"的/了/在/是/和/与"等虚词）
+   - 单字或无意义词（如"机""文""本"）
+   - 包含中文/英文标点
+   - 纯数字/纯符号
+   - 指代性泛词（"本文""该书""我们""它们"）
+   - 代码片段（含 `。`/`。py`/`def。`/`class。`）
+   - 2-3 字无意义英文缩写（df/pd/np/os/id/col/val/max/min/Hot/train/import/valid/fold）
+   - 在原文末出现或原文中仅作为普通词语
 
-【实体列表】
-{entity_text}
+2. **保留并分类（valid）** 如果实体：
+   - 是专有名词（算法名/工具名/指标名/概念名等）
+   - 在原文中出现并有独立语义
+   - 长度 2-20 字
 
-【上下文 chunks】
+3. **分类标签（recommended_type 之一）**：
+   {', '.join(config['entity_types'])}
+
+## 示例
+输入：[{{"id":"e1","name":"随机森林"}},{{"id":"e2","name":"本文对机器学习进行了介绍"}},{{"id":"e3","name":"机"}}]
+输出：{{"valid":[{{"id":"e1","name":"随机森林","recommended_type":"算法"}}],"removed":[{{"id":"e2","name":"本文对机器学习进行了介绍"}},{{"id":"e3","name":"机"}}]}}
+
+## 实体列表
+{entity_json}
+
+## 上下文
 {chunk_text}
 
-对每个实体判断 valid 或 invalid，返回 JSON（只返回 JSON）：{{
-  "valid": [{{"name": "...", "recommended_type": "...", "confidence": "high/medium"}}],
-  "invalid": [{{"name": "...", "reason": "..."}}],
-  "suggestions": "建议补充的实体或删除原因"
-}}"""
+只返回 JSON，格式：{{"valid":[{{"id":"...","name":"...","recommended_type":"..."}}],"removed":[{{"id":"...","name":"..."}}]}}"""
 
     def _build_relation_prompt(self, chunks: list, entities: list) -> str:
         """构建关系提取 prompt — 限制 chunk 数量防止超 token"""
@@ -228,13 +242,15 @@ class LLMRefiner:
         valid_entities, pre_removed = self._prefilter(entities)
         logger.info(f"规则预过滤: {len(entities)}→{len(valid_entities)} (删除{len(pre_removed)})")
 
-        BATCH_SIZE = 60
+        BATCH_SIZE = 40  # 减少每批数量让 LLM 更精准
         all_refined = []
         all_removed = list(pre_removed)  # 规则过滤的算删除
         all_suggestions = []
 
         for batch_start in range(0, len(valid_entities), BATCH_SIZE):
             batch = valid_entities[batch_start:batch_start + BATCH_SIZE]
+            # 建立 id→entity 索引
+            id_entity = {e.get('id', ''): e for e in batch if e.get('id')}
             try:
                 prompt = self._build_refine_prompt(batch, chunks)
                 raw = self._call_api([
@@ -243,29 +259,46 @@ class LLMRefiner:
                 ])
                 result = self._parse_json(raw)
 
-                type_map = {}
-                invalid_names = set()
-                for item in result.get('valid', []):
-                    name = item.get('name', '').strip()
-                    if name:
-                        type_map[name] = item
-                for item in result.get('invalid', []):
-                    name = item.get('name', '').strip()
-                    if name:
-                        invalid_names.add(name)
+                # LLM 返回 valid/removed（可能用 valid/removed 或 valid/invalid）
+                valid_items = result.get('valid', result.get('valid_items', []))
+                removed_items = result.get('removed', result.get('removed_items', result.get('invalid', [])))
+
+                removed_ids = set()
+                type_updates = {}  # id → type
+                for item in removed_items:
+                    eid = item.get('id', '').strip()
+                    ename = item.get('name', '').strip()
+                    if eid:
+                        removed_ids.add(eid)
+                    elif ename:
+                        # fallback: name → find id
+                        for e in batch:
+                            if e.get('name') == ename:
+                                removed_ids.add(e.get('id', ''))
+                                break
+
+                for item in valid_items:
+                    eid = item.get('id', '').strip()
+                    rtype = item.get('recommended_type', '').strip()
+                    if eid and rtype:
+                        type_updates[eid] = rtype
+                    elif item.get('name') and rtype:
+                        for e in batch:
+                            if e.get('name') == item.get('name'):
+                                type_updates[e.get('id', '')] = rtype
+                                break
 
                 for e in batch:
-                    name = e.get('name', '')
-                    if name in invalid_names:
+                    eid = e.get('id', '')
+                    if eid in removed_ids:
                         all_removed.append(e)
                     else:
-                        recommendation = type_map.get(name, {})
-                        if recommendation.get('recommended_type'):
-                            e['type'] = recommendation['recommended_type']
+                        if eid in type_updates:
+                            e['type'] = type_updates[eid]
                         all_refined.append(e)
 
                 if result.get('suggestions'):
-                    all_suggestions.append(result['suggestions'])
+                    all_suggestions.append(str(result['suggestions']))
 
             except Exception as e:
                 logger.warning(f"批次精筛失败 (offset={batch_start}): {e}")

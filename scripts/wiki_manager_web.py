@@ -3116,7 +3116,7 @@ def refine_entities():
     try:
         # 获取来源相关的实体
         entity_rows = conn.execute(
-            'SELECT id, name, type, properties FROM entities WHERE source_chapter = ?',
+            "SELECT id, name, type, properties FROM entities WHERE source_chapter = ? OR source_chapter = 'regex'",
             (source,)
         ).fetchall()
         entities = [dict(row) for row in entity_rows]
@@ -3190,7 +3190,7 @@ def extract_relations():
     conn = get_db_connection()
     try:
         entity_rows = conn.execute(
-            'SELECT id, name, type FROM entities WHERE source_chapter = ?',
+            "SELECT id, name, type FROM entities WHERE source_chapter = ? OR source_chapter = 'regex'",
             (source,)
         ).fetchall()
         entities = [dict(row) for row in entity_rows]

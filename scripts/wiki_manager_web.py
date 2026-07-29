@@ -3247,11 +3247,13 @@ def refine_and_extract():
     if not candidates:
         return jsonify({"success": False, "error": "预过滤后无有效候选实体"})
 
-    # 2. 构建合并 Prompt + 调用 LLM
+    # 2. 构建合并 Prompt + 调用 LLM（max_tokens 足够大让 content 有值）
     prompt = build_combined_prompt(chunks_text, candidates)
+    # 追加 JSON 强制约束
+    prompt += "\n\n### 严格要求\n1. 整个回复只能是一个 JSON 对象\n2. 不要包含任何解释、思考过程、markdown 语法\n3. 不要写 ```json 或其他代码块标记\n4. 直接输出 {\"valid\":[...],\"removed\":[...],\"relations\":[...]}"
     try:
-        llm_output = call_llm(prompt, max_tokens=4000)
-        logger.info(f"LLM refine-and-extract: output_len={len(llm_output)}, first100={llm_output[:100]}")
+        llm_output = call_llm(prompt, max_tokens=8000)
+        logger.info(f"LLM refine-and-extract: output_len={len(llm_output)}, first200={llm_output[:200]}")
         if not llm_output or not llm_output.strip():
             return jsonify({"success": False, "error": "LLM 返回空内容，请重试或减少候选实体量"})
         result = json.loads(llm_output)

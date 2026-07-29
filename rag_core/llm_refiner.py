@@ -110,7 +110,7 @@ def build_combined_prompt(chunks_text: str, entities: List[Dict]) -> str:
     {{"source": "实体A名称", "target": "实体B名称", "rel_type": "关系类型", "evidence": "原文依据"}}
   ]
 }}
-只返回JSON，不要额外文字。"""
+只返回JSON，不要任何解释、思考过程、markdown标记。直接输出：{{"valid":[...]}}"""
 
 
 class LLMRefiner:

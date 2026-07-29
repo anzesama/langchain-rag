@@ -3151,7 +3151,7 @@ def apply_refine():
             eid = ent.get('id')
             if eid:
                 # 先删除关联关系
-                conn.execute('DELETE FROM relationships WHERE source_entity_id = ? OR target_entity_id = ?', (eid, eid))
+                conn.execute('DELETE FROM relationships WHERE source_id = ? OR target_id = ?', (eid, eid))
                 cur = conn.execute('DELETE FROM entities WHERE id = ?', (eid,))
                 deleted_count += cur.rowcount
 

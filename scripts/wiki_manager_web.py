@@ -653,6 +653,7 @@ HTML_TEMPLATE = """
                     </select>
                     <button class="btn btn-purple" onclick="runRefineEntities()" style="padding: 8px 16px;">精筛实体</button>
                     <button class="btn btn-primary" onclick="runExtractRelations()" style="padding: 8px 16px;">提取关系</button>
+                    <button class="btn btn-success" onclick="runRefineAll()" style="padding: 8px 16px; background: linear-gradient(135deg, #11998e, #38ef7d); border: none;">一键精炼</button>
                 </div>
             </div>
 
@@ -2272,6 +2273,55 @@ if (data.relations.length === 0) {
             } catch (e) { content.innerHTML = `<div class="empty-state">请求失败: ${escapeHtml(e.message)}</div>`; }
         }
 
+        async function runRefineAll() {
+            const source = document.getElementById('source-select').value;
+            if (!source) { showToast('请先选择来源文件', 'error'); return; }
+            const content = document.getElementById('llm-results');
+            content.innerHTML = '<div class="empty-state"><span class="loading"></span> 一键精炼中: 先精筛实体...</div>';
+            try {
+                const res = await fetch('/api/llm/refine-all', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({source})
+                });
+                const data = await res.json();
+                if (data.success) {
+                    const r = data.result;
+                    let html = `<div style="line-height: 1.8;"><h3 style="color: #1890ff; margin-bottom: 15px;">一键精炼结果</h3>`;
+                    html += `<p>实体: ${r.entity_count}→${r.refined_count} (删除${r.removed_count}个)</p>`;
+                    html += `<p>关系: ${r.relation_count} 条</p>`;
+
+                    // 精筛结果
+                    if (r.removed_count > 0) {
+                        html += `<h4 style="color: #ff4d4f; margin: 8px 0;">删除的实体</h4><ul style="max-height: 150px; overflow-y: auto;">`;
+                        (r.removed_examples||[]).forEach(e => { html += `<li style="color: #cf1322;">${escapeHtml(e)}</li>`; });
+                        html += '</ul>';
+                    }
+
+                    // 关系
+                    if (r.relations && r.relations.length > 0) {
+                        html += '<h4 style="color: #52c41a; margin: 8px 0;">提取的关系</h4>';
+                        html += '<table style="width:100%;border-collapse:collapse;margin-top:10px;"><thead><tr style="background:#f5f5f5;"><th style="padding:6px;text-align:left;">源</th><th style="padding:6px;text-align:left;">关系</th><th style="padding:6px;text-align:left;">目标</th></tr></thead><tbody>';
+                        r.relations.forEach(rel => {
+                            html += `<tr><td style="padding:6px;border-bottom:1px solid #eee;">${escapeHtml(rel.source)}</td><td style="padding:6px;border-bottom:1px solid #eee;color:#1890ff;">${escapeHtml(rel.type)}</td><td style="padding:6px;border-bottom:1px solid #eee;">${escapeHtml(rel.target)}</td></tr>`;
+                        });
+                        html += '</tbody></table>';
+                        html += `<button class="btn btn-primary" onclick="importRelations(${JSON.stringify(r.relations)})" style="margin-top:12px;">导入所有关系</button>`;
+                    }
+
+                    // 应用精筛按钮
+                    window.__refineResult = { source: source, entities: r.refined, removed: r.removed_all };
+                    if (r.removed_count > 0) {
+                        html += `<br><button class="btn btn-success" onclick="applyRefineResult()" style="margin-top:12px;">应用精筛结果（删除${r.removed_count}个无效实体）</button>`;
+                    }
+                    html += '</div>';
+                    content.innerHTML = html;
+                } else {
+                    content.innerHTML = `<div class="empty-state">一键精炼失败: ${escapeHtml(data.error)}</div>`;
+                }
+            } catch (e) { content.innerHTML = `<div class="empty-state">请求失败: ${escapeHtml(e.message)}</div>`; }
+        }
+
         async function runExtractRelations() {
             const source = document.getElementById('source-select').value;
             if (!source) { showToast('请先选择来源文件', 'error'); return; }
@@ -3102,6 +3152,76 @@ def list_sources():
         return jsonify({"success": True, "sources": result})
     finally:
         conn.close()
+
+
+@app.route('/api/llm/refine-all', methods=['POST'])
+def refine_all():
+    """一键精炼：精筛实体 + 提取关系"""
+    data = request.json
+    source = data.get('source', '').strip()
+    if not source:
+        return jsonify({"success": False, "error": "缺少 source 参数"})
+
+    conn = get_db_connection()
+    try:
+        # 获取实体（文档+regex）
+        entity_rows = conn.execute(
+            "SELECT id, name, type, properties FROM entities WHERE source_chapter = ? OR source_chapter = 'regex'",
+            (source,)
+        ).fetchall()
+        entities = [dict(row) for row in entity_rows]
+
+        # 获取 chunks
+        chunk_rows = conn.execute(
+            'SELECT chunk_id, text_content as chunk_text FROM chunks WHERE source = ?',
+            (source,)
+        ).fetchall()
+        chunks = [dict(row) for row in chunk_rows]
+    finally:
+        conn.close()
+
+    if not entities and not chunks:
+        return jsonify({"success": False, "error": f"source '{source}' 无数据"})
+
+    # 获取 LLM 设置
+    settings = get_llm_settings()
+    refiner = LLMRefiner(
+        endpoint=settings.get('llm_endpoint', AGNES_API_BASE),
+        api_key=settings.get('llm_api_key', AGNES_API_KEY),
+        model=settings.get('llm_model', 'agnes-2.0-flash'),
+        domain=settings.get('domain_type', 'machine-learning'),
+    )
+
+    # 如果实体太多，截取前200个（LLM 也要分批，避免太多）
+    MAX_REFINE_ENTITIES = 200
+    full_entities = entities
+    if len(entities) > MAX_REFINE_ENTITIES:
+        entities = entities[:MAX_REFINE_ENTITIES]
+        logger.info(f"精筛实体截取: {len(full_entities)} → {MAX_REFINE_ENTITIES}")
+
+    # Step 1: 精筛实体
+    entity_count = len(full_entities)
+    refine_result = refiner.refine_entities(entities, chunks)
+    refined = refine_result.get('entities', [])
+    removed = refine_result.get('removed', [])
+
+    # Step 2: 提取关系（用精筛后的实体）
+    relation_result = refiner.extract_relations(chunks, refined)
+    relations = relation_result.get('relations', [])
+
+    return jsonify({
+        "success": True,
+        "result": {
+            "entity_count": entity_count,
+            "refined_count": len(refined),
+            "removed_count": len(removed),
+            "removed_examples": [{"id": e.get('id'), "name": e.get('name')} for e in removed[:10]],
+            "refined": refined,
+            "removed_all": removed,
+            "relations": relations,
+            "relation_count": len(relations),
+        }
+    })
 
 
 @app.route('/api/llm/refine-entities', methods=['POST'])

@@ -153,37 +153,40 @@ class LLMRefiner:
 
     def _build_relation_prompt(self, chunks: list, entities: list) -> str:
         """构建关系提取 prompt — 限制 chunk 数量防止超 token"""
-        # 限制 chunk 数量避免 prompt 太大
-        MAX_CHUNKS = 15
+        import json as _json
+        MAX_CHUNKS = 10
         selected = chunks[:MAX_CHUNKS] if len(chunks) > MAX_CHUNKS else chunks
-        chunk_text = '\n\n'.join(
-            f"[chunk {i}] {c.get('chunk_text', c.get('page_content', ''))[:300]}"
+        chunk_text = '\n'.join(
+            f"[Chunk {i}] {c.get('chunk_text', c.get('page_content', ''))[:200]}"
             for i, c in enumerate(selected)
         )
         entity_names = [e['name'] for e in entities if e.get('name') and len(e['name'].strip()) >= 2]
-        entity_list = ', '.join(entity_names[:80])
+        entity_list = ', '.join(entity_names[:50])  # 限制
 
         config = self.config
-        return f"""你是知识图谱关系提取专家。从以下 [{config['label']}] 领域的技术文本中提取实体和关系。
-
-【文本 chunks】
-{chunk_text}
-
-【参考实体（供参考，可忽略）】
-{entity_list}
-
-要求：
-1. 从文本中提取真正的技术概念实体（中文优先，长度 2-15字）
-2. 关系类型：{', '.join(config['rel_types'])}
-3. 只提取文本中明确出现的关系，不要臆测
-4. 每个 source/target 必须是你提取的实体名
-
-返回 JSON（只返回 JSON）：{{
-  "relations": [
-    {{"source": "entity1", "target": "entity2", "type": "关系类型", "description": "简要说明"}}
-  ],
-  "count": N
-}}"""
+        rel_types_str = ', '.join(config['rel_types'])
+        return ("你是一个知识图谱关系抽取专家。从给定的文本片段中提取实体之间的语义关系。\n\n"
+            "## 输入说明\n"
+            "1. 一段或多段原文片段\n"
+            "2. 已知实体列表（供参考，但也可以从原文中提取不在列表中的实体）\n\n"
+            "## 提取规则\n"
+            "1. **只提取文本中明确陈述的关系**，不要推测或编造。\n"
+            "2. 优先使用已知实体列表中的实体，但也可从原文中提取不在列表中的实体。\n"
+            f"3. 关系类型从以下选择：{rel_types_str}\n"
+            "4. 每条关系格式：{\"source\": \"实体A\", \"target\": \"实体B\", \"type\": \"关系类型\", \"evidence\": \"原文依据\"}\n\n"
+            "## 示例\n"
+            "原文：XGBoost 常用于分类任务，其性能优于逻辑回归。\n"
+            "实体：XGBoost, 分类, 逻辑回归\n"
+            '输出：\n'
+            '{\"relations\": [\n'
+            '  {\"source\": \"XGBoost\", \"target\": \"分类\", \"type\": \"适用\", \"evidence\": \"XGBoost常用于分类任务\"},\n'
+            '  {\"source\": \"XGBoost\", \"target\": \"逻辑回归\", \"type\": \"对比\", \"evidence\": \"其性能优于逻辑回归\"}\n'
+            ']}\n\n'
+            "## 原文片段\n"
+            f"{chunk_text}\n\n"
+            "## 已知实体\n"
+            f"{entity_list}\n\n"
+            '返回 JSON（只返回 JSON）：{\"relations\": [{\"source\": \"...\", \"target\": \"...\", \"type\": \"...\", \"evidence\": \"...\"}]}')
 
     def _call_api(self, messages: list, temperature: float = 0.1, max_tokens: int = 1500) -> str:
         """调用 OpenAI-compatible API"""
@@ -328,14 +331,26 @@ class LLMRefiner:
 
             # 基本过滤：source/target 非空且不是垃圾单词
             weak = {'the','a','an','is','it','data','text','code','file','value','test','type','key','list','item'}
-            valid = [r for r in relations
-                     if r.get('source') and r.get('target')
-                     and len(r.get('source','').strip()) >= 2
-                     and len(r.get('target','').strip()) >= 2
-                     and r.get('source','').strip().lower() not in weak
-                     and r.get('target','').strip().lower() not in weak]
+            valid = []
+            seen = set()
+            for r in relations:
+                src = r.get('source', '').strip()
+                tgt = r.get('target', '').strip()
+                tp = r.get('type', '').strip()
+                if not src or not tgt or not tp:
+                    continue
+                if len(src) < 2 or len(tgt) < 2 or len(src) > 30 or len(tgt) > 30:
+                    continue
+                if src.lower() in weak or tgt.lower() in weak:
+                    continue
+                # 去重
+                key = (src, tgt, tp)
+                if key in seen:
+                    continue
+                seen.add(key)
+                valid.append({'source': src, 'target': tgt, 'type': tp, 'evidence': r.get('evidence', '')})
 
-            logger.info(f"[LLM 关系提取]: {len(valid)}/{len(relations)} 有效")
+            logger.info(f"[LLM 关系提取]: {len(valid)}/{len(relations)} 有效（去重后）")
             return {"relations": valid, "count": len(valid)}
 
         except Exception as e:

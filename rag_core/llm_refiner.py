@@ -117,7 +117,7 @@ class LLMRefiner:
   "count": N
 }}"""
 
-    def _call_api(self, messages: list, temperature: float = 0.1, max_tokens: int = 2000) -> str:
+    def _call_api(self, messages: list, temperature: float = 0.1, max_tokens: int = 1500) -> str:
         """调用 OpenAI-compatible API"""
         url = f"{self.endpoint}/chat/completions"
         payload = {
@@ -162,7 +162,7 @@ class LLMRefiner:
 
     def refine_entities(self, entities: list, chunks: list) -> dict:
         """
-        精筛实体列表 — 发送给 LLM 审核过滤
+        精筛实体列表 — 发送给 LLM 审核过滤（分批，每批最多 60 个）
 
         Returns:
             {entities: [...], removed: [...], suggestions: [...]}
@@ -170,44 +170,51 @@ class LLMRefiner:
         if not entities:
             return {"entities": entities, "removed": [], "suggestions": []}
 
-        try:
-            prompt = self._build_refine_prompt(entities, chunks)
-            raw = self._call_api([
-                {"role": "system", "content": "你是知识图谱审核专家，只返回 JSON 格式的结果，不包含解释文字。"},
-                {"role": "user", "content": prompt},
-            ])
-            result = self._parse_json(raw)
+        BATCH_SIZE = 60
+        all_refined = []
+        all_removed = []
+        all_suggestions = []
 
-            # build entity name → recommended type lookup
-            type_map = {}
-            invalid_names = set()
-            for item in result.get('valid', []):
-                name = item.get('name', '').strip()
-                if name:
-                    type_map[name] = item
-            for item in result.get('invalid', []):
-                name = item.get('name', '').strip()
-                if name:
-                    invalid_names.add(name)
+        for batch_start in range(0, len(entities), BATCH_SIZE):
+            batch = entities[batch_start:batch_start + BATCH_SIZE]
+            try:
+                prompt = self._build_refine_prompt(batch, chunks)
+                raw = self._call_api([
+                    {"role": "system", "content": "你是知识图谱审核专家，只返回 JSON 格式的结果，不包含解释文字。"},
+                    {"role": "user", "content": prompt},
+                ])
+                result = self._parse_json(raw)
 
-            refined = []
-            removed = []
-            for e in entities:
-                name = e.get('name', '')
-                if name in invalid_names:
-                    removed.append(e)
-                else:
-                    recommendation = type_map.get(name, {})
-                    if recommendation.get('recommended_type'):
-                        e['type'] = recommendation['recommended_type']
-                    refined.append(e)
+                type_map = {}
+                invalid_names = set()
+                for item in result.get('valid', []):
+                    name = item.get('name', '').strip()
+                    if name:
+                        type_map[name] = item
+                for item in result.get('invalid', []):
+                    name = item.get('name', '').strip()
+                    if name:
+                        invalid_names.add(name)
 
-            logger.info(f"LLM 精筛: {len(entities)}→{len(refined)} (删除{len(removed)})")
-            return {"entities": refined, "removed": removed, "suggestions": result.get('suggestions', [])}
+                for e in batch:
+                    name = e.get('name', '')
+                    if name in invalid_names:
+                        all_removed.append(e)
+                    else:
+                        recommendation = type_map.get(name, {})
+                        if recommendation.get('recommended_type'):
+                            e['type'] = recommendation['recommended_type']
+                        all_refined.append(e)
 
-        except Exception as e:
-            logger.warning(f"LLM 精筛失败: {e}")
-            return {"entities": entities, "removed": [], "suggestions": []}
+                if result.get('suggestions'):
+                    all_suggestions.append(result['suggestions'])
+
+            except Exception as e:
+                logger.warning(f"批次精筛失败 (offset={batch_start}): {e}")
+                all_refined.extend(batch)  # 失败时整批保留
+
+        logger.info(f"LLM 精筛: {len(entities)}→{len(all_refined)} (删除{len(all_removed)})")
+        return {"entities": all_refined, "removed": all_removed, "suggestions": all_suggestions}
 
     def extract_relations(self, chunks: list, entities: list) -> dict:
         """

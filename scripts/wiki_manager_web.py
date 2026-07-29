@@ -2244,6 +2244,7 @@ if (data.relations.length === 0) {
                 const data = await res.json();
                 if (data.success) {
                     const r = data.result;
+                    const source_val = source;
                     let html = `<div style="line-height: 1.8;"><h3 style="color: #1890ff; margin-bottom: 15px;">LLM 精筛结果</h3>`;
                     html += `<p>总实体: ${r.entities.length + r.removed.length} → 保留: ${r.entities.length}, 删除: ${r.removed.length}</p>`;
                     if (r.suggestions) html += `<div style="padding: 8px; background: #e6f7ff; border-radius: 4px; margin: 8px 0;">💡 ${escapeHtml(String(r.suggestions))}</div>`;
@@ -2255,6 +2256,8 @@ if (data.relations.length === 0) {
                         r.removed.forEach(e => { html += `<li style="color: #cf1322;">${escapeHtml(e.name||'?')}</li>`; });
                         html += '</ul>';
                     }
+                    // 应用按钮 — 删除标记实体 + 更新类型
+                    html += `<div style="margin-top: 16px;"><button class="btn btn-success" onclick="applyRefineResult('${escapeHtml(source)}', JSON.stringify({entities: ${JSON.stringify(r.entities)}, removed: ${JSON.stringify(r.removed)}}))">应用精筛结果（删除无效实体+更新类型）</button><span style="margin-left: 8px; color: #999; font-size: 13px;">保留 ${r.entities.length} 个，删除 ${r.removed.length} 个</span></div>`;
                     html += '</div>';
                     content.innerHTML = html;
                 } else {
@@ -2313,6 +2316,27 @@ if (data.relations.length === 0) {
                     showToast('导入失败: ' + data.error, 'error');
                 }
             } catch (e) { showToast('导入失败: ' + e.message, 'error'); }
+        }
+
+        async function applyRefineResult(source, resultJson) {
+            const result = JSON.parse(resultJson);
+            const removed = result.removed || [];
+            const entities = result.entities || [];
+            if (!confirm(`确认应用精筛结果？\n删除 ${removed.length} 个无效实体\n更新 ${entities.length} 个实体的分类`)) return;
+            try {
+                const res = await fetch('/api/llm/apply-refine', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({source: document.getElementById('source-select').value, entities, removed})
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`已应用: 删除${data.deleted}个, 更新${data.updated}个`, 'success');
+                    loadStats();
+                } else {
+                    showToast('应用失败: ' + data.error, 'error');
+                }
+            } catch (e) { showToast('应用失败: ' + e.message, 'error'); }
         }
 
         function closeLLMModal() {
@@ -3106,6 +3130,42 @@ def refine_entities():
     )
     result = refiner.refine_entities(entities, chunks)
     return jsonify({"success": True, "result": result})
+
+
+@app.route('/api/llm/apply-refine', methods=['POST'])
+def apply_refine():
+    """应用精筛结果 — 删除无效实体 + 更新分类"""
+    data = request.json
+    entities = data.get('entities', [])
+    removed = data.get('removed', [])
+    source = data.get('source', '')
+
+    conn = get_db_connection()
+    deleted_count = 0
+    updated_count = 0
+    try:
+        # 删除无效实体
+        for ent in removed:
+            name = ent.get('name', '').strip()
+            if name:
+                cur = conn.execute('DELETE FROM entities WHERE name = ? AND source_chapter = ?', (name, source))
+                deleted_count += cur.rowcount
+
+        # 更新保留实体的类型
+        for ent in entities:
+            name = ent.get('name', '').strip()
+            new_type = ent.get('type', ent.get('recommended_type', '')).strip()
+            if name and new_type:
+                cur = conn.execute(
+                    'UPDATE entities SET type = ? WHERE name = ? AND source_chapter = ?',
+                    (new_type, name, source)
+                )
+                updated_count += cur.rowcount
+
+        conn.commit()
+        return jsonify({"success": True, "deleted": deleted_count, "updated": updated_count})
+    finally:
+        conn.close()
 
 
 @app.route('/api/llm/extract-relations', methods=['POST'])

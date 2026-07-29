@@ -51,6 +51,53 @@ class LLMRefiner:
         self.domain = domain
         self.config = DOMAIN_CONFIGS.get(domain, DOMAIN_CONFIGS['machine-learning'])
 
+    # 预处理：规则过滤明显垃圾实体（减少 LLM 负担）
+    NOISE_PATTERNS = [
+        (r'^.{0,1}$', '单字'),  # 零字或单字
+        (r'^[0-9\s\.\-_]+$', '纯数字符号'),
+        (r'^get$|^set$|^the$|^and$|^for$|^not$|^has$|^new$|^int$|^def$|^let$|^var$|^try$|^end$|^nil$|^use$|^add$', '无意义英文单词'),
+        (r'^df$|^pd$|^np$|^os$|^id$', 'Python 缩写'),
+        (r'^col$|^ord$|^fold$|^Hot$|^train$|^import$', '代码片段 / 英文碎片'),
+        (r'^import|^from\s|^print\(', '代码行'),
+        (r'^[a-zA-Z]{1,3}$', '极短英文'),
+        (r'^[:,：，\-\{\}\[\]\|\\/#&*+~^@%!=<>]+$', '纯符号'),
+    ]
+    WEAK_NAMES = {'time', 'day', 'year', 'data', 'text', 'file', 'key', 'sum', 'val', 'num',
+                  'idx', 'sql', 'csv', 'http', 'url', 'img', 'img', 'usr', 'dev','db',
+                  'config', 'test', 'case', 'max', 'min', 'set', 'get', 'opt', 'item',
+                  'list', 'dict', 'cat', 'dog', 'type', 'model', 'method', 'calc',
+                  'score', 'valid', 'step'}
+
+    def _prefilter(self, entities: list) -> tuple:
+        """返回 (valid_entities, removed_entities)"""
+        import re
+        valid, removed = [], []
+        for e in entities:
+            name = e.get('name', '').strip()
+            # 过短/过长
+            if len(name) < 2 or len(name) > 20:
+                removed.append(e); continue
+            # 纯符号/数字
+            if re.match(r'^[0-9\W_]+$', name):
+                removed.append(e); continue
+            # 包含标点（除非是合理的书名/术语）
+            if re.search(r'[，。、；：！？【】《》（）\-\*]', name):
+                removed.append(e); continue
+            # 英文弱词
+            if len(name) <= 3 and name.lower() in self.WEAK_NAMES:
+                removed.append(e); continue
+            # 规则匹配
+            matched = False
+            for pat, _reason in self.NOISE_PATTERNS:
+                if re.search(pat, name):
+                    removed.append(e); matched = True; break
+            if matched: continue
+            # 包含虚词（大多数句子）
+            if len(name) > 8 and re.search('[\u7684\u4e86\u5728\u662f\u8457\u300d\u300f]', name):
+                removed.append(e); continue
+            valid.append(e)
+        return valid, removed
+
     def _build_refine_prompt(self, entities: list, chunks: list) -> str:
         """构建精筛实体 prompt"""
         entity_text = '\n'.join(
@@ -63,10 +110,17 @@ class LLMRefiner:
         ) if chunks else '(无上下文)'
 
         config = self.config
-        return f"""你是知识图谱审核专家。请审核以下 [{config['label']}] 领域的实体列表。
+        return f"""你是知识图谱审核专家。请审核以下 [{config['label']}] 领域的实体列表，标记无效实体应删除。
 
-【审核标准】
-{config['entity_review_rules']}
+【删除标准 — 满足任一即标记 invalid】
+- 完整句子或句子片段（≥8字且包含"的/了/在/是"）
+- 单个汉字或两个无意义字符
+- 包含中文标点（。，、；：！？）
+- 指代性泛词：本文，本书，此处，这一章，用户手册
+- 纯数字、纯符号
+- 非技术性常见英文单词（the/and/for/it/is/has/import）
+- 2-3字英文缩写（如 df/pd/np/os/id/col/val/max/min）
+- 长度 < 2 字或 > 20 字
 
 【有效类型】
 {', '.join(config['entity_types'])}
@@ -77,7 +131,7 @@ class LLMRefiner:
 【上下文 chunks】
 {chunk_text}
 
-请分析每个实体并返回 JSON（只返回 JSON，不要解释）：{{
+对每个实体判断 valid 或 invalid，返回 JSON（只返回 JSON）：{{
   "valid": [{{"name": "...", "recommended_type": "...", "confidence": "high/medium"}}],
   "invalid": [{{"name": "...", "reason": "..."}}],
   "suggestions": "建议补充的实体或删除原因"
@@ -162,7 +216,7 @@ class LLMRefiner:
 
     def refine_entities(self, entities: list, chunks: list) -> dict:
         """
-        精筛实体列表 — 发送给 LLM 审核过滤（分批，每批最多 60 个）
+        精筛实体列表 — 规则预过滤 + LLM 审核（分批，每批最多 60 个）
 
         Returns:
             {entities: [...], removed: [...], suggestions: [...]}
@@ -170,13 +224,17 @@ class LLMRefiner:
         if not entities:
             return {"entities": entities, "removed": [], "suggestions": []}
 
+        # 规则预过滤：先删明显垃圾
+        valid_entities, pre_removed = self._prefilter(entities)
+        logger.info(f"规则预过滤: {len(entities)}→{len(valid_entities)} (删除{len(pre_removed)})")
+
         BATCH_SIZE = 60
         all_refined = []
-        all_removed = []
+        all_removed = list(pre_removed)  # 规则过滤的算删除
         all_suggestions = []
 
-        for batch_start in range(0, len(entities), BATCH_SIZE):
-            batch = entities[batch_start:batch_start + BATCH_SIZE]
+        for batch_start in range(0, len(valid_entities), BATCH_SIZE):
+            batch = valid_entities[batch_start:batch_start + BATCH_SIZE]
             try:
                 prompt = self._build_refine_prompt(batch, chunks)
                 raw = self._call_api([
@@ -213,7 +271,7 @@ class LLMRefiner:
                 logger.warning(f"批次精筛失败 (offset={batch_start}): {e}")
                 all_refined.extend(batch)  # 失败时整批保留
 
-        logger.info(f"LLM 精筛: {len(entities)}→{len(all_refined)} (删除{len(all_removed)})")
+        logger.info(f"LLM 精筛: {len(entities)}→{len(all_refined)} (规则删{len(pre_removed)}, LLM删{len(all_removed)-len(pre_removed)})")
         return {"entities": all_refined, "removed": all_removed, "suggestions": all_suggestions}
 
     def extract_relations(self, chunks: list, entities: list) -> dict:

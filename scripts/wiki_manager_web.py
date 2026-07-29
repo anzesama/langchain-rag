@@ -146,7 +146,8 @@ def call_llm(prompt: str, max_tokens: int = 2000) -> str:
             {"role": "user", "content": prompt}
         ],
         "temperature": temp,
-        "max_tokens": max_tok
+        "max_tokens": max_tok,
+        "reasoning_effort": "disabled"  # GLM-4 Flash 禁用 reasoning 确保返回 content
     }
 
     for attempt in range(3):

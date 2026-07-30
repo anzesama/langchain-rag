@@ -2188,7 +2188,9 @@ if (data.relations.length === 0) {
             step();
 
             // 统计
-            document.getElementById('graph-entity-count').textContent = filtered.length;
+            const connectedChk = document.getElementById('graph-connected-only');
+            const showConnected = connectedChk && connectedChk.checked;
+            document.getElementById('graph-entity-count').textContent = showConnected ? filtered.length : entities.length;
             document.getElementById('graph-relation-count').textContent = graphEdges.length;
 
             // 鼠标交互

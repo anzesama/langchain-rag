@@ -2109,7 +2109,14 @@ if (data.relations.length === 0) {
             const entityNameSet = new Set(entities.map(e => e.name));
             const validRels = relations.filter(r => r.source_name && entityNameSet.has(r.source_name) && r.target_name && entityNameSet.has(r.target_name));
             const linkedNames = new Set(); validRels.forEach(r => { linkedNames.add(r.source_name); linkedNames.add(r.target_name); });
-            const filtered = entities.filter(e => linkedNames.has(e.name));
+
+            // 根据复选框决定显示哪些实体
+            const connectedChk = document.getElementById('graph-connected-only');
+            const showConnected = connectedChk && connectedChk.checked;
+            let filtered = entities;
+            if (showConnected) {
+                filtered = entities.filter(e => linkedNames.has(e.name));
+            }
 
             console.log('loadGraph: filtered=', filtered.length, 'validRels=', validRels.length);
 

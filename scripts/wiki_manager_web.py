@@ -1013,7 +1013,9 @@ HTML_TEMPLATE = """
 
             // 仅在图表面板加载图谱
             if (panelName === 'graph') {
-                loadGraph();
+                Promise.all([loadEntities(), loadRelations()]).then(function() {
+                    loadGraph();
+                });
             }
             if (panelName === 'llm') {
                 loadLLMSettings();

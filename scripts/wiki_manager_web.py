@@ -3483,6 +3483,10 @@ def apply_changes():
             rtype = rel.get('rel_type', '关联')
             if src and tgt:
                 try:
+                    # 如果实体不存在，先创建
+                    for name in [src, tgt]:
+                        if not wiki_db.get_entity_id(name):
+                            wiki_db.add_entity(name, '未知', source_chapter=source)
                     wiki_db.add_relationship(src, tgt, rtype, source_chapter=source)
                     imported_count += 1
                 except Exception as e:

@@ -2112,7 +2112,6 @@ if (data.relations.length === 0) {
             const linkedNames = new Set(); validRels.forEach(r => { linkedNames.add(r.source_name); linkedNames.add(r.target_name); });
 
             // 根据复选框决定显示哪些实体
-            const connectedChk = document.getElementById('graph-connected-only');
             const showConnected = connectedChk && connectedChk.checked;
             let filtered = entities;
             if (showConnected) {

@@ -127,7 +127,7 @@ def ensure_db_schema():
             },
         ], ensure_ascii=False)
         conn.execute(
-            "INSERT OR IGNORE INTO settings (key, value) VALUES ('llm_profiles', ?)",
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('llm_profiles', ?)",
             (default_profiles,)
         )
         conn.commit()

@@ -2097,17 +2097,21 @@ if (data.relations.length === 0) {
 
         function loadGraph() {
             const container = document.getElementById('graph-chart');
-            if (!container) return;
+            if (!container) { console.error('Container not found!'); return; }
 
             if (graphAnimId) { cancelAnimationFrame(graphAnimId); graphAnimId = null; }
             if (graphCanvas) { graphCanvas.remove(); graphCanvas = null; graphCtx = null; }
             container.innerHTML = '';
+
+            console.log('loadGraph: entities=', entities.length, 'relations=', relations.length);
 
             // 数据准备
             const entityNameSet = new Set(entities.map(e => e.name));
             const validRels = relations.filter(r => r.source_name && entityNameSet.has(r.source_name) && r.target_name && entityNameSet.has(r.target_name));
             const linkedNames = new Set(); validRels.forEach(r => { linkedNames.add(r.source_name); linkedNames.add(r.target_name); });
             const filtered = entities.filter(e => linkedNames.has(e.name));
+
+            console.log('loadGraph: filtered=', filtered.length, 'validRels=', validRels.length);
 
             const W = container.offsetWidth || 728, H = container.offsetHeight || 600;
 

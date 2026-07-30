@@ -248,19 +248,12 @@ def _parse_llm_json(raw: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # 提取第一个 {...} 对象
-    m = re.search(r'\{[^{}]*\{[^{}]*\}.*\}', raw, re.DOTALL)
-    if m:
+    # 提取完整 JSON 对象：找第一个 { 到最后一个 }
+    first = raw.find('{')
+    last = raw.rfind('}')
+    if first >= 0 and last > first:
         try:
-            return json.loads(m.group())
-        except json.JSONDecodeError:
-            pass
-
-    # 简单 {...} 对象
-    m = re.search(r'\{.*\}', raw, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group())
+            return json.loads(raw[first:last+1])
         except json.JSONDecodeError:
             pass
 
@@ -3402,7 +3395,7 @@ def refine_and_extract():
 只返回 JSON，不要任何解释：{{"valid":[{{"id":"...","name":"...","recommended_type":"类型"}}],"removed":[{{"id":"...","name":"..."}}]}}"""
 
     try:
-        raw = call_llm(refine_prompt, max_tokens=4000)
+        raw = call_llm(refine_prompt, max_tokens=8000)
         logger.info(f"refine-and-extract step1: raw_len={len(raw)}")
         refine_result = _parse_llm_json(raw)
         valid_entities = refine_result.get('valid', [])
@@ -3426,7 +3419,7 @@ def refine_and_extract():
 
 只返回 JSON：{{"relations":[{{"source":"实体A","target":"实体B","rel_type":"关系类型","evidence":"依据"}}]}}"""
         try:
-            rel_raw = call_llm(relation_prompt, max_tokens=3000)
+            rel_raw = call_llm(relation_prompt, max_tokens=8000)
             logger.info(f"refine-and-extract step2: rel_raw_len={len(rel_raw)}")
             rel_result = _parse_llm_json(rel_raw)
             relations = rel_result.get('relations', [])

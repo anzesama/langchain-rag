@@ -2095,7 +2095,7 @@ if (data.relations.length === 0) {
         var graphAnimId = null;
         var graphHoveredIdx = -1;
 
-        function loadGraph() {
+        async function loadGraph() {
             const container = document.getElementById('graph-chart');
             if (!container) { console.error('Container not found!'); return; }
 
@@ -2103,10 +2103,11 @@ if (data.relations.length === 0) {
             if (graphCanvas) { graphCanvas.remove(); graphCanvas = null; graphCtx = null; }
             container.innerHTML = '';
 
-            console.log('loadGraph: entities=', entities.length, 'relations=', relations.length);
+            console.log('loadGraph START: entities.length=', entities.length, 'relations.length=', relations.length);
 
             // 数据准备
             const entityNameSet = new Set(entities.map(e => e.name));
+            console.log('entityNameSet size:', entityNameSet.size);
             const validRels = relations.filter(r => r.source_name && entityNameSet.has(r.source_name) && r.target_name && entityNameSet.has(r.target_name));
             const linkedNames = new Set(); validRels.forEach(r => { linkedNames.add(r.source_name); linkedNames.add(r.target_name); });
 
@@ -2118,7 +2119,7 @@ if (data.relations.length === 0) {
                 filtered = entities.filter(e => linkedNames.has(e.name));
             }
 
-            console.log('loadGraph: filtered=', filtered.length, 'validRels=', validRels.length);
+            console.log('loadGraph: validRels=', validRels.length, 'linkedNames=', linkedNames.size, 'filtered=', filtered.length);
 
             const W = container.offsetWidth || 728, H = container.offsetHeight || 600;
 
@@ -2201,8 +2202,11 @@ if (data.relations.length === 0) {
             // 统计
             const connectedChk = document.getElementById('graph-connected-only');
             const showConnected = connectedChk && connectedChk.checked;
-            document.getElementById('graph-entity-count').textContent = showConnected ? filtered.length : entities.length;
-            document.getElementById('graph-relation-count').textContent = graphEdges.length;
+            const entityCount = showConnected ? filtered.length : entities.length;
+            const relationCount = graphEdges.length;
+            console.log('loadGraph: setting counts - entityCount=', entityCount, 'relationCount=', relationCount);
+            document.getElementById('graph-entity-count').textContent = entityCount;
+            document.getElementById('graph-relation-count').textContent = relationCount;
 
             // 鼠标交互
             var dragIdx = -1;

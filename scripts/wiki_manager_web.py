@@ -2106,6 +2106,7 @@ if (data.relations.length === 0) {
             console.log('loadGraph START: entities.length=', entities.length, 'relations.length=', relations.length);
 
             // 数据准备
+            const connectedChk = document.getElementById('graph-connected-only');
             const entityNameSet = new Set(entities.map(e => e.name));
             console.log('entityNameSet size:', entityNameSet.size);
             const validRels = relations.filter(r => r.source_name && entityNameSet.has(r.source_name) && r.target_name && entityNameSet.has(r.target_name));

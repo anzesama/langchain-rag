@@ -2199,8 +2199,6 @@ if (data.relations.length === 0) {
             step();
 
             // 统计
-            const connectedChk = document.getElementById('graph-connected-only');
-            const showConnected = connectedChk && connectedChk.checked;
             const entityCount = showConnected ? filtered.length : entities.length;
             const relationCount = graphEdges.length;
             console.log('loadGraph: setting counts - entityCount=', entityCount, 'relationCount=', relationCount);

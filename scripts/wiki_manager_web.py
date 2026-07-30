@@ -734,11 +734,17 @@ HTML_TEMPLATE = """
                         <option value="novel">小说/剧情</option>
                         <option value="ontology">技术概念本体</option>
                     </select>
-                    <label style="font-weight: bold;">LLM API:</label>
-                    <input type="text" id="llm-endpoint" placeholder="http://..." style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; width: 240px;">
-                    <input type="text" id="llm-key" placeholder="sk-..." style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; width: 160px;">
+                    <label style="font-weight: bold;">LLM 预设:</label>
+                    <select id="llm-profile-select" onchange="switchProfile()" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px;">
+                        <option value="">-- 选择模型预设 --</option>
+                    </select>
+                    <label style="font-weight: bold; margin-left: 8px;">端点:</label>
+                    <input type="text" id="llm-endpoint" placeholder="http://..." style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; width: 260px;">
+                    <label style="font-weight: bold; margin-left: 8px;">Key:</label>
+                    <input type="text" id="llm-key" placeholder="sk-..." style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; width: 200px;">
+                    <label style="font-weight: bold; margin-left: 8px;">模型:</label>
                     <input type="text" id="llm-model" placeholder="model name" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; width: 140px;">
-                    <button class="btn btn-secondary" onclick="saveLLMSettings()" style="font-size: 13px; padding: 6px 14px;">保存设置</button>
+                    <button class="btn btn-primary" onclick="saveLLMSettings()" style="font-size: 13px; padding: 6px 14px;">保存设置</button>
                 </div>
             </div>
 
@@ -2285,6 +2291,22 @@ if (data.relations.length === 0) {
                     if (s.llm_api_key) document.getElementById('llm-key').value = s.llm_api_key;
                     if (s.llm_model) document.getElementById('llm-model').value = s.llm_model;
                     if (s.domain_type) document.getElementById('domain-select').value = s.domain_type;
+
+                    // 加载预设列表
+                    window.__llm_profiles = data.profiles || [];
+                    const sel = document.getElementById('llm-profile-select');
+                    sel.innerHTML = '<option value="">-- 选择模型预设 --</option>' +
+                        window.__llm_profiles.map(p => `<option>${escapeHtml(p.name)}</option>`).join('');
+
+                    // 自动匹配当前生效的预设
+                    const curEndpoint = s.llm_endpoint || '';
+                    const curModel = s.llm_model || '';
+                    for (let i = 0; i < window.__llm_profiles.length; i++) {
+                        if (window.__llm_profiles[i].endpoint === curEndpoint && window.__llm_profiles[i].model === curModel) {
+                            sel.selectedIndex = i + 1;
+                            break;
+                        }
+                    }
                 }
             } catch (e) { console.error('加载LLM设置失败:', e); }
         }
@@ -2308,6 +2330,18 @@ if (data.relations.length === 0) {
                 llm_api_key: document.getElementById('llm-key').value,
                 llm_model: document.getElementById('llm-model').value,
             };
+            // 如果选中了预设，更新该预设的配置
+            const sel = document.getElementById('llm-profile-select');
+            if (sel.selectedIndex > 0) {
+                const idx = sel.selectedIndex - 1;
+                const profiles = window.__llm_profiles || [];
+                if (profiles[idx]) {
+                    profiles[idx].endpoint = settings.llm_endpoint;
+                    profiles[idx].api_key = settings.llm_api_key;
+                    profiles[idx].model = settings.llm_model;
+                }
+                settings.llm_profiles = JSON.stringify(profiles);
+            }
             try {
                 const res = await fetch('/api/settings/update', {
                     method: 'POST',
@@ -2321,6 +2355,19 @@ if (data.relations.length === 0) {
                     showToast('保存失败: ' + data.error, 'error');
                 }
             } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+        }
+
+        function switchProfile() {
+            const sel = document.getElementById('llm-profile-select');
+            const idx = sel.selectedIndex;
+            if (idx <= 0) return;
+            const profiles = window.__llm_profiles || [];
+            const p = profiles[idx - 1];
+            if (p) {
+                document.getElementById('llm-endpoint').value = p.endpoint || '';
+                document.getElementById('llm-key').value = p.api_key || '';
+                document.getElementById('llm-model').value = p.model || '';
+            }
         }
 
         async function updateDomain() {

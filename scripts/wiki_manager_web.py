@@ -105,6 +105,31 @@ def ensure_db_schema():
                 'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)',
                 (key, val)
             )
+        # 默认 LLM 预设配置
+        default_profiles = json.dumps([
+            {
+                "name": "AGNES Flash",
+                "endpoint": "https://apihub.agnes-ai.cn/v1",
+                "api_key": AGNES_API_KEY or "",
+                "model": "agnes-2.0-flash",
+            },
+            {
+                "name": "GLM-4 Flash",
+                "endpoint": "https://open.bigmodel.cn/api/paas/v4",
+                "api_key": "b92daae003f94dfd95f39b246161fbf0.nHGUco5",
+                "model": "glm-4.7-flash",
+            },
+            {
+                "name": "自定义",
+                "endpoint": "",
+                "api_key": "",
+                "model": "",
+            },
+        ], ensure_ascii=False)
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('llm_profiles', ?)",
+            (default_profiles,)
+        )
         conn.commit()
         logger.info("DB schema updated — settings 表已就绪")
     finally:
@@ -3553,9 +3578,17 @@ def extract_relations():
 
 @app.route('/api/settings', methods=['GET'])
 def get_settings_api():
-    """获取当前 LLM 配置"""
+    """获取当前 LLM 配置 + 预设列表"""
     settings = get_llm_settings()
-    return jsonify({"success": True, "settings": settings})
+    conn = get_db_connection()
+    try:
+        profile_row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'llm_profiles'"
+        ).fetchone()
+        profiles = json.loads(profile_row['value']) if profile_row else []
+    finally:
+        conn.close()
+    return jsonify({"success": True, "settings": settings, "profiles": profiles})
 
 
 @app.route('/api/settings/update', methods=['POST'])

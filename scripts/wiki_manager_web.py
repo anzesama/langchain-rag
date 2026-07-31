@@ -2128,15 +2128,26 @@ if (data.relations.length === 0) {
                 return;
             }
 
-            // 节点位置
+            // 计算节点连接数（度）
+            var degree = new Array(filtered.length).fill(0);
+            graphEdges.forEach(e => {
+                degree[e.srcIdx]++;
+                degree[e.tgtIdx]++;
+            });
+
+            // 节点位置（连接数多的节点初始位置更靠近中心）
             graphPositions = filtered.map(function(e, i) {
+                var d = degree[i];  // 连接数
+                // 连接数越多，初始位置越靠近中心（factor 从 200 降到 50）
+                var spread = Math.max(50, 200 - d * 30);
                 return {
-                    x: W/2 + (Math.random()-0.5)*200, y: H/2 + (Math.random()-0.5)*200,
+                    x: W/2 + (Math.random()-0.5)*spread, y: H/2 + (Math.random()-0.5)*spread,
                     vx: 0, vy: 0,
                     name: e.name,
                     size: Math.max(18, Math.min(50, 18 + e.name.length * 4)),
                     color: 'hsl(' + ((i * 137.508) % 360) + ', 60%, 55%)',
-                    raw: e
+                    raw: e,
+                    degree: d  // 存储连接数
                 };
             });
 

@@ -2139,7 +2139,7 @@ if (data.relations.length === 0) {
             graphPositions = filtered.map(function(e, i) {
                 var d = degree[i];  // 连接数
                 // 连接数越多，初始位置越靠近中心（factor 从 200 降到 50）
-                var spread = Math.max(30, 100 - d * 15);
+                var spread = Math.max(80, 200 - d * 15);
                 return {
                     x: W/2 + (Math.random()-0.5)*spread, y: H/2 + (Math.random()-0.5)*spread,
                     vx: 0, vy: 0,
@@ -2171,7 +2171,7 @@ if (data.relations.length === 0) {
             // 力导布局
             var iter = 0;
             function step() {
-                var k = 0.1, damp = 0.85, centerX = W/2, centerY = H/2;
+                var k = 0.08, damp = 0.9, centerX = W/2, centerY = H/2;
                 for (var i = 0; i < graphPositions.length; i++) {
                     var pi = graphPositions[i];
                     pi.vx += (centerX - pi.x) * 0.001;
@@ -2181,7 +2181,7 @@ if (data.relations.length === 0) {
                         var pj = graphPositions[j];
                         var dx = pi.x - pj.x, dy = pi.y - pj.y;
                         var dist = Math.max(Math.sqrt(dx*dx+dy*dy), 1);
-                        var force = 200 / (dist*dist)  // 从 150 增到 200;
+                        var force = 150 / (dist*dist)  // 从 150 增到 200;
                         pi.vx += dx/dist * force;
                         pi.vy += dy/dist * force;
                         pj.vx -= dx/dist * force;
@@ -2192,7 +2192,7 @@ if (data.relations.length === 0) {
                 graphEdges.forEach(e => {
                     var s = graphPositions[e.srcIdx], t = graphPositions[e.tgtIdx];
                     var dx = t.x - s.x, dy = t.y - s.y, d = Math.sqrt(dx*dx+dy*dy) || 1;
-                    var f = (d - 120) * 0.008  // 从 80 改为 120，系数从 0.01 改为 0.008;
+                    var f = (d - 80) * 0.01  // 从 80 改为 120，系数从 0.01 改为 0.008;
                     s.vx += dx/d * f; s.vy += dy/d * f;
                     t.vx -= dx/d * f; t.vy -= dy/d * f;
                 });
@@ -2205,7 +2205,7 @@ if (data.relations.length === 0) {
                 });
                 iter++;
                 drawGraph();
-                if (iter < 300) graphAnimId  // 从 200 增到 300 = requestAnimationFrame(step);
+                if (iter < 200) graphAnimId  // 从 200 增到 300 = requestAnimationFrame(step);
             }
             drawGraph();
             step();

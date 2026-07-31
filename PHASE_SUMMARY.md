@@ -1,6 +1,52 @@
-# 阶段复盘：Phase 6 - 文档更新（libsql 迁移）
-- 时间：2026-07-26 02:00
+# 阶段复盘：知识图谱 JS 错误修复 + 即时记录机制 + 知识库检索优化
+- 时间：2026-07-31 09:05
 - 状态：✅ 完成
+
+## ✅ 做得好的点
+- 用 Git 备份（wiki_manager_web.py.backup2）+ 小步提交，避免数据丢失
+- 即时记录机制设计合理，草稿→正式条目→归档一气呵成
+- 知识库 + reading 混合检索策略平衡了效率与可靠性
+
+## 📝 完成内容
+
+### 1. 知识图谱 JS 错误修复
+- 修复 `connectedChk` 重复声明（2115行 + 2202行各声明一次 → 保留一处）
+- 修复 `showConnected` 重复声明（同上）
+- 修复 `reloadGraphData` 在 HTML 中引用时函数未定义 → 在 loadGraph 内重新声明 connectedChk
+- 知识图谱面板恢复正常（143 实体 / 15 关系可渲染）
+
+### 2. 即时记录机制
+- 在 AGENTS.md 中增加"即时记录机制"章节
+- 草稿位置：`troubleshooting-drafts.md`
+- 触发条件：排查 2min+ / 尝试 2+ 方案未解决 / 非显而易见的根因 / 需查外部资料
+- 完善时机：已解决 → 转正式条目并删草稿；未解决 → 保留并标记 `⚠️ 未解决，待跟进`
+
+### 3. 经验检索策略优化
+- 将 `troubleshooting.md` 添加到知识库（58 个文本块）
+- AGENTS.md 改为"优先用 search_knowledge_base 检索（top_k=5）→ 失败再读 troubleshooting.md"
+- 新增问题 39：JavaScript 变量重复声明导致 SyntaxError
+
+### 4. .gitignore 更新
+- 忽略临时文件：documents/uploaded/、search_results/、troubleshooting-drafts.md、js_code.txt、wiki_manager_web.log
+
+## 📝 未完成事项
+- RAG 服务 /api/search 端点偶尔返回 500 错误（Agnes API 网络问题）— 跳过，先用 grep
+
+## 🐛 遇到的问题
+- 三次撤销备份 cp backup2 → wiki_manager_web.py 导致 connectedChk 声明被完全删除 → 需手动恢复
+- RAG 服务端口冲突（errno 10048）→ 杀掉旧进程再启动
+- 搜索 API 调用超时 → 改为直接用 grep 查 troubleshooting.md
+
+## 📦 产出物
+- AGENTS.md（即时记录机制 + 检索策略）
+- troubleshooting.md（新增问题 39）
+- .gitignore（忽略临时文件）
+- wiki_manager_web.py（修复 JS 错误）
+- troubleshooting-drafts.md（已删除）
+
+## ➡️ 下一步
+- 修复 RAG 服务搜索 API
+- 继续使用知识库检索 + grep 双方案
 
 ---
 

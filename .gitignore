@@ -19,6 +19,15 @@ ml_env/
 .vscode/
 .idea/
 
+# Temp files
+documents/uploaded/
+search_results/
+scripts/storage/
+troubleshooting-drafts.md
+js_code.txt
+wiki_manager_web.log
+troubleshooting-drafts.md
+
 # pi coding agent
 .pi/
 *.swp

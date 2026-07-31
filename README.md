@@ -2,8 +2,9 @@
 
 **项目路径**：D:/class/project-config/langchain-rag
 **Python 版本**：3.9 (ml_env)
-**最后更新**：2026-07-26
+**最后更新**：2026-07-31
 **存储架构**：libsql（统一存储层）+ FAISS LSH + ChromaDB（回退）
+**Web 界面**：Wiki Manager (5000) + RAG Server (8765)
 
 ---
 
@@ -14,6 +15,9 @@ langchain-rag/
 ├── scripts/                    # 📜 核心脚本
 │   ├── rag_cli.py              # RAG CLI 工具（统一入口）
 │   ├── rag_server_v2.py        # RAG HTTP 服务器
+│   ├── wiki_manager_web.py     # Wiki 知识图谱管理 Web 界面
+│   ├── wiki_review_web.py      # Wiki 审核清理 Web 界面
+│   ├── wiki_graph_web.py       # 知识图谱静态 HTML 生成器
 │   └── rag_extension/          # pi Agent 扩展
 │       └── pi_rag_tool.ts      # 知识库搜索工具（自动启动服务）
 │
@@ -198,6 +202,18 @@ python scripts/rag_cli.py view
 - ✅ 内容去重
 - ✅ 全局计数器
 
+### Web 界面
+- ✅ **Wiki Manager**（端口 5000）：知识图谱可视化 + 图搜索 + LLM 精筛 + 审核清理
+- ✅ **RAG Server**（端口 8765）：知识库 API（搜索/上传/文档管理）
+- ✅ **Wiki Review**：实体/关系审核面板
+- ✅ 模型预设切换（AGNES / GLM-4 / 自定义）
+- ✅ 知识库检索（search_knowledge_base，top_k=5）
+
+### 经验管理
+- ✅ 即时记录机制（troubleshooting-drafts.md → troubleshooting.md）
+- ✅ 知识库 + grep 混合检索策略
+- ✅ .gitignore 忽略临时文件
+
 ---
 
 ## 📊 系统状态
@@ -282,6 +298,13 @@ python scripts/rag_cli.py view
 
 ## 📝 更新日志
 
+### 2026-07-31 - 知识图谱修复 + 即时记录机制 + 知识库检索优化
+- ✅ 修复知识图谱 JS 错误（connectedChk、showConnected 重复声明、reloadGraphData 未定义）
+- ✅ 在 AGENTS.md 中增加"即时记录机制"（troubleshooting-drafts.md → troubleshooting.md）
+- ✅ 经验检索策略优化：优先用 search_knowledge_base（top_k=5）→ 失败再 grep
+- ✅ 新增 troubleshooting.md 问题 39（JavaScript 重复声明 SyntaxError）
+- ✅ .gitignore 忽略临时文件
+
 ### 2026-07-26 - libsql 迁移完成
 - ✅ 创建 `vector_store_libsql.py` — libsql 向量存储管理器
 - ✅ 创建 `wiki_db_libsql.py` — libsql Wiki 数据库
@@ -314,5 +337,5 @@ python scripts/rag_cli.py view
 
 ---
 
-**项目状态**：✅ 运行正常（libsql 统一存储）
-**最后维护**：2026-07-26
+**项目状态**：✅ 运行正常（libsql 统一存储 + Wiki Manager Web + 知识库检索）
+**最后维护**：2026-07-31

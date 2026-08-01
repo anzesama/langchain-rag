@@ -3354,6 +3354,7 @@ def search_knowledge():
 @app.route('/api/sources')
 def list_sources():
     """返回所有已导入文档的来源列表（含实体数和 chunk 数）"""
+    import os
     conn = get_db_connection()
     try:
         rows = conn.execute(
@@ -3362,7 +3363,12 @@ def list_sources():
         result = []
         for row in rows:
             source = row['source']
-            ec = conn.execute('SELECT COUNT(*) FROM entities WHERE source_chapter = ?', (source,)).fetchone()[0]
+            # 用文件名匹配 entities.source_chapter（处理完整路径 vs 文件名的差异）
+            source_basename = os.path.basename(source)
+            ec = conn.execute(
+                'SELECT COUNT(*) FROM entities WHERE source_chapter = ? OR source_chapter = ?',
+                (source, source_basename)
+            ).fetchone()[0]
             cc = conn.execute('SELECT COUNT(*) FROM chunks WHERE source = ?', (source,)).fetchone()[0]
             result.append({"name": source, "entities": ec, "chunks": cc})
         return jsonify({"success": True, "sources": result})
@@ -3374,16 +3380,17 @@ def list_sources():
 def refine_and_extract():
     """合并 Prompt 一键精炼：预过滤 + 两段 LLM 调用（精筛 + 关系提取）"""
     from rag_core.llm_refiner import prefilter_entities, build_combined_prompt
-    data = request.json
+    import os
     source = data.get('source', '').strip()
+    source_basename = os.path.basename(source) if source else ''
     if not source:
         return jsonify({"success": False, "error": "缺少 source 参数"})
 
     conn = get_db_connection()
     try:
         entity_rows = conn.execute(
-            "SELECT id, name, type, source_chapter FROM entities WHERE source_chapter = ? OR source_chapter = 'regex'",
-            (source,)
+            "SELECT id, name, type, source_chapter FROM entities WHERE source_chapter = ? OR source_chapter = ? OR source_chapter = 'regex'",
+            (source, source_basename)
         ).fetchall()
         all_entities = [dict(row) for row in entity_rows]
         chunk_rows = conn.execute(
@@ -3472,8 +3479,10 @@ def refine_and_extract():
 @app.route('/api/llm/apply-changes', methods=['POST'])
 def apply_changes():
     """应用精筛+关系提取的变更"""
+    import os
     data = request.json
     source = data.get('source', '').strip()
+    source_basename = os.path.basename(source) if source else source
     valid = data.get('valid', [])
     removed = data.get('removed', [])
     relations = data.get('relations', [])
@@ -3514,8 +3523,8 @@ def apply_changes():
                     # 如果实体不存在，先创建
                     for name in [src, tgt]:
                         if not wiki_db.get_entity_id(name):
-                            wiki_db.add_entity(name, '未知', source_chapter=source)
-                    wiki_db.add_relationship(src, tgt, rtype, source_chapter=source)
+                            wiki_db.add_entity(name, '未知', source_chapter=source_basename)
+                    wiki_db.add_relationship(src, tgt, rtype, source_chapter=source_basename)
                     imported_count += 1
                 except Exception as e:
                     logger.warning(f"add_relationship failed ({src}->{tgt}): {e}")
@@ -3538,17 +3547,19 @@ def refine_all():
 @app.route('/api/llm/refine-entities', methods=['POST'])
 def refine_entities():
     """LLM 精筛指定来源文件的实体"""
+    import os
     data = request.json
     source = data.get('source', '').strip()
+    source_basename = os.path.basename(source) if source else ''
     if not source:
         return jsonify({"success": False, "error": "缺少 source 参数"})
 
     conn = get_db_connection()
     try:
-        # 获取来源相关的实体
+        # 获取来源相关的实体（支持完整路径和文件名两种匹配）
         entity_rows = conn.execute(
-            "SELECT id, name, type, properties FROM entities WHERE source_chapter = ? OR source_chapter = 'regex'",
-            (source,)
+            "SELECT id, name, type, properties FROM entities WHERE source_chapter = ? OR source_chapter = ? OR source_chapter = 'regex'",
+            (source, source_basename)
         ).fetchall()
         entities = [dict(row) for row in entity_rows]
         if not entities:

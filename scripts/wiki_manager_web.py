@@ -3381,6 +3381,7 @@ def refine_and_extract():
     """合并 Prompt 一键精炼：预过滤 + 两段 LLM 调用（精筛 + 关系提取）"""
     from rag_core.llm_refiner import prefilter_entities, build_combined_prompt
     import os
+    data = request.json
     source = data.get('source', '').strip()
     source_basename = os.path.basename(source) if source else ''
     if not source:

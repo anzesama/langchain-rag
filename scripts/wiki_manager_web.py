@@ -741,6 +741,9 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
+            <!-- 精炼状态统计 -->
+            <div id="refine-stats" style="margin-bottom: 10px; font-size: 13px; color: #666;"></div>
+
             <!-- 来源选择 -->
             <div style="margin-bottom: 16px; padding: 12px; background: #f9f9f9; border-radius: 4px;">
                 <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
@@ -997,6 +1000,8 @@ HTML_TEMPLATE = """
 
         // ========== 面板切换 ==========
         function showPanel(panelName, evt) {
+            // 切换面板时关闭详情面板
+            closeDetailPanel();
             console.log('[showPanel]', panelName);
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
             let activeTab = evt ? evt.currentTarget : document.querySelector(`.nav-tab[data-panel="${panelName}"]`);
@@ -1699,6 +1704,12 @@ if (data.relations.length === 0) {
             });
         }
 
+        function closeDetailPanel() {
+            document.getElementById('detail-panel').style.display = 'none';
+            document.getElementById('detail-empty').style.display = 'block';
+            selectedEntity = null;
+        }
+
         async function deleteRelationById(relId) {
             if (!confirm('确定删除此关系？')) return;
             try {
@@ -1788,9 +1799,7 @@ if (data.relations.length === 0) {
                 var data = await res.json();
                 if (data.success) {
                     showToast('实体已删除', 'success');
-                    selectedEntity = null;
-                    document.getElementById('detail-panel').style.display = 'none';
-                    document.getElementById('detail-empty').style.display = 'block';
+                    closeDetailPanel();  // 关闭详情面板
                     await loadEntities();
                     await loadRelations();
                     loadGraph();
@@ -2097,6 +2106,7 @@ if (data.relations.length === 0) {
 
         async function loadGraph() {
             const container = document.getElementById('graph-chart');
+            console.log('loadGraph: container found =', !!container);
             if (!container) { console.error('Container not found!'); return; }
 
             if (graphAnimId) { cancelAnimationFrame(graphAnimId); graphAnimId = null; }
@@ -2122,36 +2132,14 @@ if (data.relations.length === 0) {
             console.log('loadGraph: validRels=', validRels.length, 'linkedNames=', linkedNames.size, 'filtered=', filtered.length);
 
             const W = container.offsetWidth || 728, H = container.offsetHeight || 600;
+            console.log('Canvas size:', W, 'x', H);
 
             if (filtered.length === 0) {
                 container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:'+H+'px;color:#999;font-size:16px;">暂无已连接的节点<br><small>请先导入关系或取消勾选「仅已连接」</small></div>';
                 return;
             }
 
-            // 计算节点连接数（度）
-            var degree = new Array(filtered.length).fill(0);
-            graphEdges.forEach(e => {
-                degree[e.srcIdx]++;
-                degree[e.tgtIdx]++;
-            });
-
-            // 节点位置（连接数多的节点初始位置更靠近中心）
-            graphPositions = filtered.map(function(e, i) {
-                var d = degree[i];  // 连接数
-                // 连接数越多，初始位置越靠近中心（factor 从 200 降到 50）
-                var spread = Math.max(100, 250 - d * 15);
-                return {
-                    x: W/2 + (Math.random()-0.5)*spread, y: H/2 + (Math.random()-0.5)*spread,
-                    vx: 0, vy: 0,
-                    name: e.name,
-                    size: Math.max(20, Math.min(60, 25 + d * 8)),
-                    color: 'hsl(' + ((i * 137.508) % 360) + ', 60%, 55%)',
-                    raw: e,
-                    degree: d  // 存储连接数
-                };
-            });
-
-            // 边索引
+            // 边索引（先构建，供后续 degree 计算使用）
             var nameIdx = {};
             filtered.forEach((e, i) => nameIdx[e.name] = i);
             graphEdges = [];
@@ -2160,6 +2148,15 @@ if (data.relations.length === 0) {
                 if (si !== undefined && ti !== undefined && si !== ti) graphEdges.push({srcIdx: si, tgtIdx: ti, name: r.rel_type});
             });
 
+            // 计算节点连接数（度）
+            var degree = new Array(filtered.length).fill(0);
+            graphEdges.forEach(e => {
+                degree[e.srcIdx]++;
+                degree[e.tgtIdx]++;
+            });
+
+            console.log('Created', filtered.length, 'nodes and', graphEdges.length, 'edges');
+
             // 创建 Canvas
             graphCanvas = document.createElement('canvas');
             graphCanvas.width = W; graphCanvas.height = H;
@@ -2167,6 +2164,24 @@ if (data.relations.length === 0) {
             graphCanvas.style.cursor = 'grab';
             container.appendChild(graphCanvas);
             graphCtx = graphCanvas.getContext('2d');
+            console.log('Canvas created, context:', !!graphCtx);
+
+            // 创建节点位置
+            graphPositions = filtered.map(function(e, i) {
+                var d = degree[i];
+                var spread = Math.max(100, 250 - d * 15);
+                return {
+                    x: W/2 + (Math.random()-0.5)*spread,
+                    y: H/2 + (Math.random()-0.5)*spread,
+                    vx: 0, vy: 0,
+                    name: e.name,
+                    size: Math.max(20, Math.min(60, 25 + d * 8)),
+                    color: 'hsl(' + ((i * 137.508) % 360) + ', 60%, 55%)',
+                    raw: e,
+                    degree: d
+                };
+            });
+            console.log('Created', graphPositions.length, 'nodes');
 
             // 力导布局
             var iter = 0;
@@ -2191,6 +2206,7 @@ if (data.relations.length === 0) {
                 // 弹力
                 graphEdges.forEach(e => {
                     var s = graphPositions[e.srcIdx], t = graphPositions[e.tgtIdx];
+                    if (!s || !t) return; // 节点不存在则跳过
                     var dx = t.x - s.x, dy = t.y - s.y, d = Math.sqrt(dx*dx+dy*dy) || 1;
                     var f = (d - 150) * 0.005;
                     s.vx += dx/d * f; s.vy += dy/d * f;
@@ -2249,20 +2265,26 @@ if (data.relations.length === 0) {
                     var p = graphPositions[dragIdx];
                     var dx = p.x - (e.offsetX || p.x), dy = p.y - (e.offsetY || p.y);
                     if (Math.abs(dx) < 3 && Math.abs(dy) < 3) showEntityDetail(p.raw);
+                    dragIdx = -1;
+                    graphCanvas.style.cursor = graphHoveredIdx >= 0 ? 'pointer' : 'grab';
+                } else {
+                    // 点击空白区域 → 关闭详情面板
+                    closeDetailPanel();
                 }
-                dragIdx = -1;
-                graphCanvas.style.cursor = graphHoveredIdx >= 0 ? 'pointer' : 'grab';
             };
         }
 
         function drawGraph() {
+            console.log('drawGraph called, graphCtx:', !!graphCtx, 'graphPositions length:', graphPositions ? graphPositions.length : 0);
             if (!graphCtx) return;
             var ctx = graphCtx, W = graphCanvas.width, H = graphCanvas.height;
             ctx.clearRect(0, 0, W, H);
+            console.log('Cleared canvas, size:', W, 'x', H);
 
             // 边
             graphEdges.forEach(e => {
                 var s = graphPositions[e.srcIdx], t = graphPositions[e.tgtIdx];
+                if (!s || !t) return; // 节点不存在则跳过
                 ctx.beginPath();
                 ctx.moveTo(s.x, s.y);
                 ctx.lineTo(t.x, t.y);
@@ -2270,6 +2292,7 @@ if (data.relations.length === 0) {
                 ctx.lineWidth = 1;
                 ctx.stroke();
             });
+            console.log('Drew', graphEdges.length, 'edges');
 
             // 节点
             graphPositions.forEach((p, i) => {
@@ -2289,6 +2312,7 @@ if (data.relations.length === 0) {
                 var txt = p.name.length > 7 ? p.name.slice(0,7)+'.' : p.name;
                 ctx.fillText(txt, p.x + r + 3, p.y + 4);
             });
+            console.log('Drew', graphPositions.length, 'nodes');
         }
 
         // 导出图谱
@@ -2338,8 +2362,48 @@ if (data.relations.length === 0) {
                 const data = await res.json();
                 if (data.success && data.sources) {
                     const sel = document.getElementById('source-select');
-                    sel.innerHTML = '<option value="">-- 选择来源文件 --</option>' +
-                        data.sources.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)} (实体: ${s.entities}, chunks: ${s.chunks})</option>`).join('');
+                    const statsDiv = document.getElementById('refine-stats');
+                    // 如果统计显示区域不存在，动态创建（以防万一）
+                    if (!statsDiv) {
+                        const panel = document.querySelector('#panel-llm .panel-header');
+                        if (panel) {
+                            const div = document.createElement('div');
+                            div.id = 'refine-stats';
+                            div.style.cssText = 'margin-bottom: 10px; font-size: 13px; color: #666;';
+                            panel.parentNode.insertBefore(div, panel.nextSibling);
+                        }
+                    }
+                    let html = '<option value="">-- 选择来源文件 --</option>';
+                    let total = 0, refined = 0;
+                    data.sources.forEach(s => {
+                        total++;
+                        let statusText = '';
+                        let icon = '';
+                        let relInfo = '';
+                        if (s.status === 'refined_with_rel') {
+                            refined++;
+                            icon = '🟢';
+                            statusText = `已精炼 (${s.relations}关系)`;
+                        } else if (s.status === 'refined_empty') {
+                            icon = '🟡';
+                            statusText = '已精炼 (无关系)';
+                        } else if (s.status === 'no_entities') {
+                            icon = '⚪';
+                            statusText = '无实体';
+                        } else {
+                            icon = '🔴';
+                            statusText = '未精炼';
+                        }
+                        // 转义来源名称防止XSS
+                        const safeSource = escapeHtml(s.name);
+                        html += `<option value="${safeSource}">${icon} ${safeSource} (${statusText})</option>`;
+                    });
+                    sel.innerHTML = html;
+                    // 更新统计
+                    const statsEl = document.getElementById('refine-stats');
+                    if (statsEl) {
+                        statsEl.innerHTML = `精炼覆盖: <strong>${refined}</strong> / ${total} 文档`;
+                    }
                 }
             } catch (e) { console.error('加载来源失败:', e); }
         }
@@ -2524,6 +2588,7 @@ if (data.relations.length === 0) {
                     showToast(`应用完成: 删除${data.deleted}个, 更新${data.updated}个, 导入${data.imported_relations}条关系`, 'success');
                     pendingChanges = null;
                     loadStats();
+                    loadSources();  // 刷新精炼状态
                     document.getElementById('llm-results').innerHTML = '<div class="empty-state">变更已应用</div>';
                 } else {
                     showToast('应用失败: ' + data.error, 'error');
@@ -3160,6 +3225,20 @@ def batch_import_relations():
                 tgt = rel.get('target', '').strip()
                 rtype = rel.get('type', '关联')
                 if src and tgt:
+                    # 自动创建缺失的实体
+                    for name in [src, tgt]:
+                        # 检查实体是否存在
+                        existing = wiki_db.get_entity_id(name)
+                        if not existing:
+                            # 使用来源文件名作为 source_chapter
+                            wiki_db.add_entity(
+                                name=name,
+                                entity_type='未知',
+                                source_chapter=rel.get('source_chapter') or 'llm_extracted',
+                                properties={}
+                            )
+                            logger.info(f"自动创建实体: {name}")
+                    # 导入关系
                     wiki_db.add_relationship(src, tgt, rtype, source_chapter=rel.get('source_chapter'))
                     imported += 1
             except Exception as e:
@@ -3353,7 +3432,7 @@ def search_knowledge():
 
 @app.route('/api/sources')
 def list_sources():
-    """返回所有已导入文档的来源列表（含实体数和 chunk 数）"""
+    """返回所有已导入文档的来源列表（含实体数、关系数和精炼状态）"""
     import os
     conn = get_db_connection()
     try:
@@ -3369,8 +3448,25 @@ def list_sources():
                 'SELECT COUNT(*) FROM entities WHERE source_chapter = ? OR source_chapter = ?',
                 (source, source_basename)
             ).fetchone()[0]
+            rc = conn.execute(
+                'SELECT COUNT(*) FROM relationships WHERE source_chapter = ? OR source_chapter = ?',
+                (source, source_basename)
+            ).fetchone()[0]
             cc = conn.execute('SELECT COUNT(*) FROM chunks WHERE source = ?', (source,)).fetchone()[0]
-            result.append({"name": source, "entities": ec, "chunks": cc})
+            # 判断状态
+            if ec == 0:
+                status = 'no_entities'
+            elif rc > 0:
+                status = 'refined_with_rel'
+            else:
+                status = 'refined_empty'  # 有实体但无关系（可能未精炼或精炼无结果）
+            result.append({
+                "name": source,
+                "entities": ec,
+                "chunks": cc,
+                "relations": rc,
+                "status": status
+            })
         return jsonify({"success": True, "sources": result})
     finally:
         conn.close()

@@ -294,6 +294,10 @@ class LLMRefiner:
 
     def _parse_json(self, text: str) -> dict:
         """解析 LLM 返回的 JSON"""
+        if not text or not text.strip():
+            logger.warning(f"_parse_json: 空响应")
+            return {"relations": []}
+        
         content = text
         if content.startswith("```json"):
             content = content[7:]
@@ -301,7 +305,19 @@ class LLMRefiner:
             content = content[3:]
         if content.endswith("```"):
             content = content[:-3]
-        return json.loads(content.strip())
+        content = content.strip()
+        
+        # 尝试找到 JSON 对象
+        start = content.find('{')
+        end = content.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            content = content[start:end+1]
+        
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            logger.warning(f"_parse_json: JSON解析失败 - {e}, 内容: {content[:200]}")
+            return {"relations": []}
 
     def refine_entities(self, entities: list, chunks: list) -> dict:
         """

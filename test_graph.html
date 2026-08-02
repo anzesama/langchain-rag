@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>测试知识图谱</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; }
+        #graph-chart { border: 1px solid #ccc; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>测试知识图谱加载</h1>
+    <div id="graph-chart"></div>
+
+    <script>
+        let entities = [];
+        let relations = [];
+
+        async function loadGraph() {
+            const container = document.getElementById('graph-chart');
+            console.log('Container:', container);
+            if (!container) { console.error('Container not found!'); return; }
+
+            // 加载数据
+            const entResp = await fetch('/api/entities?limit=10');
+            const entData = await entResp.json();
+            entities = entData.entities;
+
+            const relResp = await fetch('/api/relations?limit=10');
+            const relData = await relResp.json();
+            relations = relData.relations;
+
+            console.log('Entities:', entities.length);
+            console.log('Relations:', relations.length);
+
+            // 渲染图谱
+            const W = 800, H = 600;
+            const ctx = document.createElement('canvas').getContext('2d');
+            ctx.canvas.width = W;
+            ctx.canvas.height = H;
+            container.appendChild(ctx.canvas);
+
+            // 创建节点
+            const nodes = entities.map((e, i) => ({
+                x: W/2 + (Math.random()-0.5)*200,
+                y: H/2 + (Math.random()-0.5)*200,
+                size: 20,
+                name: e.name
+            }));
+
+            // 绘制
+            ctx.fillStyle = 'red';
+            nodes.forEach(n => {
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, n.size, 0, 2*Math.PI);
+                ctx.fill();
+                ctx.fillStyle = '#000';
+                ctx.fillText(n.name, n.x + 25, n.y + 4);
+                ctx.fillStyle = 'red';
+            });
+
+            console.log('Graph rendered successfully!');
+        }
+
+        loadGraph().catch(console.error);
+    </script>
+</body>
+</html>

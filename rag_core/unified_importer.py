@@ -111,22 +111,26 @@ class UnifiedImporter:
                 added_names.add(name)
                 stats['entities_added'] += 1
 
-            # Write relations
-            for rel in result.get('relations', []):
-                src = rel.get('source', '').strip()
-                tgt = rel.get('target', '').strip()
-                rtype = rel.get('type', rel.get('rel_type', '关联'))
-                if not src or not tgt:
-                    continue
+            # Step 4: LLM 批量关系抽取（基于新导入的 chunks）
+            # 获取刚导入的 chunks
+            chunks = self.vs.get_chunks_by_source(source)
+            if chunks and len(chunks) > 0:
+                logger.info(f"  开始批量关系抽取: {len(chunks)} chunks from {source}")
                 try:
-                    self.wiki_db.add_relationship(src, tgt, rtype, source_chapter=source)
-                except Exception:
-                    try:
-                        self.wiki_db.add_relationship(src, tgt, rtype, source_chapter=source)
-                    except Exception as e:
-                        logger.warning(f"add_relationship failed: {src}->{tgt} {e}")
-                        continue
-                stats['relations_added'] += 1
+                    from scripts.batch_extract_relations import batch_extract_relations
+                    # 传入 chunks 列表和文档路径（作为 source_chapter）
+                    relations_added = batch_extract_relations(
+                        chunks=chunks,
+                        source=source,
+                        model_name=self.extractor.model_name if hasattr(self.extractor, 'model_name') else 'agnes-2.0-flash'
+                    )
+                    stats['relations_added'] = relations_added
+                    logger.info(f"  关系抽取完成: {relations_added} 条关系")
+                except Exception as e:
+                    logger.error(f"  关系抽取失败: {e}")
+            else:
+                # 如果 chunks 为空，尝试从数据库获取
+                logger.warning(f"  警告: 无法获取 chunks，跳过关系抽取")
 
             logger.info(
                 f"  Jieba entities: {stats['entities_added']}, LLM relations: {stats['relations_added']}"

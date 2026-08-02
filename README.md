@@ -209,6 +209,36 @@ python scripts/rag_cli.py view
 - ✅ 模型预设切换（AGNES / GLM-4 / 自定义）
 - ✅ 知识库检索（search_knowledge_base，top_k=5）
 
+### 知识图谱
+- ✅ Canvas 力导向图谱（基于连接数的节点大小和位置）
+- ✅ 节点/边交互（拖拽、点击、悬停）
+- ✅ "仅已连接"过滤
+- ✅ 知识图谱图搜索（基于 ECharts）
+- ✅ 详情面板自动关闭（点击空白区域/切换面板/删除实体）
+
+### 关系抽取
+- ✅ **批量关系抽取**（CLI：`--all` / Web：一键精炼）
+- ✅ AGNES API 集成（agnes-2.0-flash 模型）
+- ✅ Web 界面关系预览和确认
+- ✅ 自动创建缺失实体
+- ✅ 实体-关系数据结构（source/target/type）
+- ✅ 支持多领域（machine-learning, novel, ontology）
+
+### LLM 精炼
+- ✅ **精炼状态显示**（已精炼/未精炼/无实体，带图标和统计）
+- ✅ 实体精筛（jieba TF-IDF + LLM 预过滤）
+- ✅ 关系提取（Few-shot + 严格类型）
+- ✅ "一键精炼"（精筛 + 关系提取合并）
+- ✅ 关系预览和手动导入
+- ✅ 实体/关系审核清理面板
+
+### 数据管理
+- ✅ **批量关系抽取脚本**（`scripts/batch_extract_relations.py`）
+- ✅ 集成到 `import.py`（Step 2+3+4 自动抽取关系）
+- ✅ Web 批量导入关系增强（自动创建实体）
+- ✅ 实体/关系去重
+- ✅ 关系类型分布统计（适用/使用/依赖/优化/组成/关联/传递）
+
 ### 经验管理
 - ✅ 即时记录机制（troubleshooting-drafts.md → troubleshooting.md）
 - ✅ 知识库 + grep 混合检索策略
@@ -298,6 +328,17 @@ python scripts/rag_cli.py view
 
 ## 📝 更新日志
 
+### 2026-08-02 - 知识图谱增强 + 批量关系抽取集成 + Web 功能完善
+- ✅ 修复知识图谱渲染问题（Canvas 节点未创建）
+- ✅ 添加力导布局（基于连接数的节点大小和初始位置）
+- ✅ 修复节点访问错误（检查节点存在性）
+- ✅ 集成批量关系抽取到 `import.py`（Step 2+3+4 自动抽取关系）
+- ✅ 修改 `batch_extract_relations.py` 支持 chunks 参数
+- ✅ Web 批量导入关系增强（自动创建缺失实体）
+- ✅ LLM 精炼状态显示（已精炼/未精炼/无实体，带图标和统计）
+- ✅ 知识图谱详情面板自动关闭（点击空白区域/切换面板/删除实体）
+- ✅ 创建文档：`RELATION_EXTRACTION_INTEGRATION.md`、`WEB_RELATION_IMPORT_ENHANCEMENT.md`、`LLM_REFINE_STATUS_DISPLAY.md`、`GRAPH_DETAIL_PANEL_AUTO_CLOSE.md`
+
 ### 2026-07-31 - 知识图谱修复 + 即时记录机制 + 知识库检索优化
 - ✅ 修复知识图谱 JS 错误（connectedChk、showConnected 重复声明、reloadGraphData 未定义）
 - ✅ 在 AGENTS.md 中增加"即时记录机制"（troubleshooting-drafts.md → troubleshooting.md）
@@ -337,5 +378,5 @@ python scripts/rag_cli.py view
 
 ---
 
-**项目状态**：✅ 运行正常（libsql 统一存储 + Wiki Manager Web + 知识库检索）
-**最后维护**：2026-07-31
+**项目状态**：✅ 运行正常（libsql 统一存储 + Wiki Manager Web + 知识库检索 + 批量关系抽取 + 知识图谱可视化）
+**最后维护**：2026-08-02

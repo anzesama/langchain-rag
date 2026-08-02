@@ -19,14 +19,15 @@ ml_env/
 .vscode/
 .idea/
 
-# Temp files
+# Temp
 documents/uploaded/
-search_results/
+documents/_github_search/
+documents/_reports/
+documents/_uploads/
 scripts/storage/
 troubleshooting-drafts.md
 js_code.txt
-wiki_manager_web.log
-troubleshooting-drafts.md
+nul
 
 # pi coding agent
 .pi/
@@ -37,19 +38,14 @@ troubleshooting-drafts.md
 # Jupyter Notebook
 .ipynb_checkpoints/
 
-# Database
+# Database (for import only, storage db excluded)
 *.db
 *.sqlite
 *.sqlite3
 *.db-journal
 
-# Data
-data/
-storage/knowledge_base/
-storage/chroma_db/
-storage/lsh_index/*.faiss
-storage/lsh_index/*.pkl
-storage/global_counter.json
+# Storage (critical data)
+!storage/knowledge_base.db
 
 # Logs
 *.log
@@ -62,7 +58,6 @@ logs/
 # Temporary files
 *.tmp
 *.temp
-nul
 tmp_*.txt
 tmp_*.log
 
@@ -75,16 +70,14 @@ Thumbs.db
 .coverage
 htmlcov/
 
-# Node modules (already excluded by node_modules/.gitkeep)
+# Node stuff
 node_modules/
 
-# Archives
-archive/
+# === 统一归档目录 (所有归档在这里) ===
+/archive/
 
 # Paddle
-*.pdparams
-*.pdopt
-*.pdiparams
-*.pdmodel
-*.pdiparams.info
-*.pdzip
+*.pdparams *.pdopt *.pdiparams *.pdmodel *.pdiparams.info *.pdzip
+
+# Weird dir
+${APPDATA}/

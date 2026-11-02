@@ -70,3 +70,44 @@ def test_get_llm_has_timeout(monkeypatch):
     # ChatOpenAI 不同版本字段名不同（request_timeout / timeout），做兼容断言
     val = getattr(llm, "request_timeout", None) or getattr(llm, "timeout", None)
     assert val is not None
+
+
+def test_search_endpoints_are_async():
+    import inspect
+    import rag_server_v2 as srv
+    routes = {r.path: r.endpoint for r in srv.app.routes if hasattr(r, "endpoint")}
+    assert inspect.iscoroutinefunction(routes["/api/search"])
+    assert inspect.iscoroutinefunction(routes["/api/search_raw"])
+    assert inspect.iscoroutinefunction(routes["/api/smart_search"])
+
+
+def test_health_latency_while_search_blocked(monkeypatch):
+    """慢检索进行时 /health 延迟仍很小（event loop 未被阻塞）。"""
+    import asyncio, time, httpx
+    import rag_server_v2 as srv
+
+    class _SlowKB:
+        def search(self, query, top_k=None, **kw):
+            time.sleep(0.8)  # 模拟阻塞 IO
+            return {"query": query, "answer": "A", "sources": []}
+
+        def get_stats(self):
+            return {"total_documents": 0}
+    monkeypatch.setattr(srv, "get_kb", lambda: _SlowKB())
+
+    async def _run():
+        transport = httpx.ASGITransport(app=srv.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as ac:
+            task = asyncio.create_task(
+                ac.post("/api/search", json={"query": "x", "top_k": 1})
+            )
+            await asyncio.sleep(0.05)  # 让 search 先进入阻塞
+            t0 = time.perf_counter()
+            r_health = await ac.get("/health")
+            latency = time.perf_counter() - t0
+            await task
+            return r_health, latency
+
+    r_health, latency = asyncio.run(_run())
+    assert r_health.status_code == 200
+    assert latency < 0.5  # health 不被 0.8s 的 search 拖住

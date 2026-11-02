@@ -246,11 +246,11 @@ async def health_check():
 
 
 @app.post("/api/search")
-def search(request: SearchRequest):
-    """搜索知识库"""
+async def search(request: SearchRequest):
+    """搜索知识库（含 LLM 生成；LLM 超时自动降级）"""
     try:
         kb = get_kb()
-        result = kb.search(request.query, top_k=request.top_k)
+        result = await run_in_threadpool(kb.search, request.query, request.top_k)
         audit_log("SEARCH", "api", f"query='{request.query[:50]}', top_k={request.top_k}")
         return result
     except Exception as e:
@@ -277,10 +277,9 @@ async def search_raw(request: SearchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/smart_search")
-def smart_search(request: SearchRequest):
+def _smart_search_sync(request: SearchRequest):
     """
-    智能搜索 - 知识库检索 + 网络采集双通道
+    智能搜索（同步实现） - 知识库检索 + 网络采集双通道
     
     流程：
     1. 先搜索知识库
@@ -379,6 +378,12 @@ def smart_search(request: SearchRequest):
     except Exception as e:
         logger.error(f"智能搜索失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/smart_search")
+async def smart_search(request: SearchRequest):
+    """智能搜索（async 包装：整体丢线程池，避免 subprocess.run 阻塞 event loop）"""
+    return await run_in_threadpool(_smart_search_sync, request)
 
 
 @app.post("/api/upload", response_model=UploadResult)

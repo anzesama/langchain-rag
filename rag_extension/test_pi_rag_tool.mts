@@ -195,3 +195,10 @@ test("8. search_knowledge_base 请求 /api/search_raw（不再调 /api/search）
     server.close();
   }
 });
+
+test("9. decideReload: 首次只记录基准不触发（避免加载即自触发的重载循环）", async () => {
+  const ar: any = await import("./rag_autoreload.ts");
+  assert.deepEqual(ar.decideReload(-1, 100), { next: 100, reload: false });
+  assert.deepEqual(ar.decideReload(100, 200), { next: 200, reload: true });
+  assert.deepEqual(ar.decideReload(100, 100), { next: 100, reload: false });
+});

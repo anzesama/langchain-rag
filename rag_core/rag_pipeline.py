@@ -21,6 +21,10 @@ from rag_core.hybrid_retriever import HybridRetriever
 from rag_core.wiki_router import get_wiki_router
 from rag_core.wiki_db import get_wiki_db
 
+# LLM 调用超时（秒），超时则降级返回检索片段
+LLM_TIMEOUT_SEC = int(os.getenv("RAG_LLM_TIMEOUT_SEC", "15"))
+DEGRADED_ANSWER = "（生成超时，仅返回检索片段）"
+
 
 def get_llm() -> ChatOpenAI:
     """创建 LLM 实例（默认使用 Agnes API）"""
@@ -28,6 +32,8 @@ def get_llm() -> ChatOpenAI:
         "model": LLM_MODEL,
         "temperature": LLM_TEMPERATURE,
         "max_tokens": LLM_MAX_TOKENS,
+        "timeout": LLM_TIMEOUT_SEC,
+        "max_retries": 1,
     }
     
     # 优先级 1: Agnes API（默认）
@@ -349,8 +355,14 @@ class RagPipeline:
         # 1. 检索（使用混合路由）
         retrieved = self.retrieve(query, top_k, score_threshold, source)
         
-        # 2. 生成
-        answer = self.generate_answer(query, retrieved)
+        # 2. 生成（超时/失败则降级，保证检索片段仍可用）
+        degraded = False
+        try:
+            answer = self.generate_answer(query, retrieved)
+        except Exception as e:
+            logger.warning(f"⚠️ 答案生成失败/超时，降级返回检索片段: {e}")
+            answer = DEGRADED_ANSWER
+            degraded = True
         
         # 3. 格式化来源
         sources = [
@@ -366,7 +378,8 @@ class RagPipeline:
             "query": query,
             "answer": answer,
             "sources": sources,
-            "route": "rag"
+            "route": "rag",
+            "degraded": degraded,
         }
 
 

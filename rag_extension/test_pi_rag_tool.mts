@@ -17,6 +17,8 @@
  *  5. waitForService: 永不 200 且预算耗尽 → false
  *  6. ragFetchWithAutoStart: 未起且 !ready → 抛「冷启动超时」
  *  7. ragFetchWithAutoStart: 服务已在跑(ready) → 透传 ragFetch
+ *  8. search_knowledge_base 打 /api/search_raw
+ *  9. rag_autoreload: 只提醒不自动重载（事故回归防护）
  */
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
@@ -196,9 +198,90 @@ test("8. search_knowledge_base 请求 /api/search_raw（不再调 /api/search）
   }
 });
 
-test("9. decideReload: 首次只记录基准不触发（避免加载即自触发的重载循环）", async () => {
+test("9. rag_autoreload: 只提醒、不自动重载（事故回归防护）", async () => {
   const ar: any = await import("./rag_autoreload.ts");
-  assert.deepEqual(ar.decideReload(-1, 100), { next: 100, reload: false });
-  assert.deepEqual(ar.decideReload(100, 200), { next: 200, reload: true });
-  assert.deepEqual(ar.decideReload(100, 100), { next: 100, reload: false });
+  // 事故（2026-11-03）：旧版 decideReload 会在 tool 执行中自动 ctx.reload() → pi 崩溃
+  assert.equal(
+    ar.decideReload,
+    undefined,
+    "decideReload 必须保持移除（自动重载会导致 pi 崩溃）"
+  );
+  assert.equal(typeof ar.needsReload, "function", "needsReload 应存在");
+  assert.equal(ar.needsReload(2000, 1000), true, "源码更新 → 提醒");
+  assert.equal(ar.needsReload(1000, 2000), false, "已 install → 不提醒");
+  assert.equal(ar.needsReload(null, 1000), false, "缺失 → 不打扰");
+
+  // 源码级防护：不得再有 fs.watch / tool_call 自动触发
+  const { readFileSync } = await import("node:fs");
+  const raw = readFileSync(new URL("./rag_autoreload.ts", import.meta.url), "utf8");
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  assert.ok(!/fs\.watch|\.watch\(/.test(code), "不得用 fs.watch 自动触发重载");
+  assert.ok(
+    !/on\(\s*["']tool_call["']/.test(code),
+    "不得在 tool_call 事件里触发重载（会 crash pi）"
+  );
+});
+
+// ===== 2026-11-03：auto-start 在 pi 真实环境下从未生效的根因防护 =====
+// 根因：probeShell 用 `-v` 探活 → WinPS 5.1 把 -v 当 -Version 要参数 → 报错 →
+//       永远探测失败 → startRagService 直接 return false → 从不 spawn。
+//       且 PowerShell 7 不在 pi 进程的 PATH 里 → 必须用绝对路径。
+
+test("10. shellProbeArgs: 不得用 -v（WinPS 5.1 会把它当 -Version 报错）", () => {
+  const args: string[] = helper.shellProbeArgs();
+  assert.ok(
+    !args.some((a: string) => /^-v/i.test(a)),
+    `探活参数不得含 -v*（实际 ${JSON.stringify(args)}）；否则 probeShell 恒失败`
+  );
+  assert.ok(args.includes("-NoProfile"), "应带 -NoProfile（避免 profile 拖慢/报错）");
+  assert.ok(args.includes("-Command"), "应用 -Command 做探活（两代 PowerShell 通吃）");
+});
+
+test("11. shellCandidates: 绝对路径优先于裸名（PATH 里没有 pwsh）", () => {
+  const list: string[] = helper.shellCandidates();
+  const pwshAbs = list.findIndex((s: string) => /PowerShell[\\/]7[\\/]pwsh\.exe$/i.test(s));
+  const pwshBare = list.findIndex((s: string) => s === "pwsh");
+  assert.ok(pwshAbs >= 0, "应包含 pwsh 绝对路径");
+  assert.ok(pwshBare >= 0, "应保留裸名作为兑底");
+  assert.ok(pwshAbs < pwshBare, "绝对路径必须排在裸名之前");
+  assert.ok(
+    list.some((s: string) => /WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i.test(s)),
+    "应包含 WinPS 5.1 绝对路径作为兑底"
+  );
+});
+
+test("12. RAG_SHELL 环境变量：显式指定时排第一", () => {
+  const old = process.env.RAG_SHELL;
+  process.env.RAG_SHELL = "C:\\custom\\pwsh.exe";
+  try {
+    assert.equal(helper.shellCandidates()[0], "C:\\custom\\pwsh.exe");
+  } finally {
+    if (old === undefined) delete process.env.RAG_SHELL;
+    else process.env.RAG_SHELL = old;
+  }
+});
+
+test("13. shellStartArgs: 用 -File 指向启动脚本（带 -NoProfile/-NoLogo）", () => {
+  const args: string[] = helper.shellStartArgs("D:\\x\\start.ps1");
+  assert.deepEqual(
+    args.slice(-2),
+    ["-File", "D:\\x\\start.ps1"],
+    "末尾必须是 -File <脚本绝对路径>"
+  );
+  assert.ok(args.includes("-ExecutionPolicy") && args.includes("Bypass"));
+  assert.ok(args.includes("-NoProfile") && args.includes("-NoLogo"));
+});
+
+test("14. noShellMessage: 不得引用未声明标识符（真实事故 RAG_SHELL ReferenceError）", () => {
+  // 事故：错误分支插值 `${RAG_SHELL}`，该标识符重构时已删除 →
+  //   恰恰在「找不到 shell、最需要看提示」时抛 ReferenceError，把友好提示吃掉。
+  // 防法：文案提取为纯函数，测试**执行**它 —— 任何未声明标识符当场抛错。
+  assert.equal(
+    typeof helper.noShellMessage,
+    "function",
+    "应导出纯函数 noShellMessage()（可测，避免文案引用未声明标识符）"
+  );
+  const msg: string = helper.noShellMessage();
+  assert.match(msg, /未找到可用 shell/, "应保留原提示语义");
+  assert.match(msg, /pwsh/i, "应列出已尝试的候选 shell（便于排查）");
 });

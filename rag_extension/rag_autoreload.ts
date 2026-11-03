@@ -1,83 +1,72 @@
 /**
- * rag-autoreload.ts — RAG 扩展热重载守护
+ * rag-autoreload.ts — RAG 扩展「源码更新提醒」
  *
- * 功能：
- *   1. 注册 /rag-reload 命令（供扩展自己调用）
- *   2. 监测主扩展文件修改时间，变化时自动执行 reload
+ * ⚠️ 事故记录（2026-11-03）：
+ *   旧版用 `fs.watch` + `tool_call` 自动触发 `ctx.reload()`。当 LLM 正在用 edit 工具
+ *   修改被监视的源文件时，watch 回调在 **tool 执行中途** 调用 reload →
+ *   pi 进程崩溃，且源文件被截断为 **0 字节**（写一半被打断）。
+ *   pi 官方文档亦明确：`ctx.reload()` 是**终止操作**，工具执行期间不可调用。
  *
- * 触发方式：
- *   - 手动：pi 中执行 /rag-reload
- *   - 自动：修改源文件 + install 后，下次 tool_call 自动检测并重载
+ * 现行策略（安全）：
+ *   1. 提供 `/rag-reload` 命令 —— 由用户在最安全的时刻主动触发；
+ *   2. 仅在 `session_start`（安全点）检查一次源码/部署的 mtime 差异，
+ *      有差异就 **提醒**（notify），**绝不自动 reload**。
  */
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { existsSync, statSync, watch } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-const MAIN_EXT = process.env.RAG_HOME
-  ? join(process.env.RAG_HOME, "rag_extension", "pi_rag_tool.ts")
-  : "D:/class/project-config/langchain-rag/rag_extension/pi_rag_tool.ts";
+const RAG_HOME = process.env.RAG_HOME || "D:/class/project-config/langchain-rag";
 
-let lastMtime = -1; // -1 = 未初始化（首轮只记录基准，不触发）
-let reloading = false;
+/** 源码位置（开发时改这里） */
+export const SRC_EXT = join(RAG_HOME, "rag_extension", "pi_rag_tool.ts");
+/** 部署副本位置（pi 实际加载这里） */
+export const DST_EXT = join(
+  process.env.USERPROFILE || "",
+  ".pi",
+  "agent",
+  "extensions",
+  "pi_rag_tool.ts"
+);
 
 /**
- * 纯函数：决定是否重载（可测）。
- * 首次（prevMtime<0）只记录基准，不触发 —— 避免扩展加载即自触发导致的重载循环。
+ * 纯函数：部署副本是否落后于源码（可测）。
+ * 任一文件缺失 → 视为「无法判定」，返回 false（不打扰用户）。
+ * 容差 1ms：避免同一次写入产生的时间戳抖动导致误报。
  */
-export function decideReload(
-  prevMtime: number,
-  mtime: number
-): { next: number; reload: boolean } {
-  if (prevMtime < 0) return { next: mtime, reload: false };
-  if (mtime > prevMtime) return { next: mtime, reload: true };
-  return { next: prevMtime, reload: false };
+export function needsReload(
+  srcMtime: number | null,
+  dstMtime: number | null
+): boolean {
+  if (srcMtime === null || dstMtime === null) return false;
+  return srcMtime > dstMtime + 1;
 }
 
-async function doReload(pi: ExtensionAPI): Promise<void> {
-  if (reloading) return;
-  reloading = true;
-  try {
-    console.log("[autoreload] 触发扩展重载...");
-    // ctx.reload() 只能在 command handler 里调用，这里用 sendUserMessage 绕道
-    pi.sendUserMessage("/rag-reload", { deliverAs: "followUp", triggerTurn: false });
-  } finally {
-    reloading = false;
-  }
-}
-
-function checkAndSchedule(pi: ExtensionAPI) {
-  if (!existsSync(MAIN_EXT)) return;
-  const mtime = statSync(MAIN_EXT).mtimeMs;
-  const d = decideReload(lastMtime, mtime);
-  lastMtime = d.next;
-  if (d.reload) {
-    console.log(`[autoreload] ${MAIN_EXT} 已更新，调度重载...`);
-    doReload(pi);
-  }
+function mtimeOf(p: string): number | null {
+  return existsSync(p) ? statSync(p).mtimeMs : null;
 }
 
 export default function (pi: ExtensionAPI) {
-  // 注册 /rag-reload 命令
+  // 手动重载入口（安全）：由用户主动执行
   pi.registerCommand("rag-reload", {
-    description: "重载 RAG pi 扩展（无需退出 pi）",
+    description: "重载 pi 扩展（安全：由用户主动触发，不会在工具执行中打断）",
     handler: async (_args, ctx) => {
       await ctx.reload();
-      ctx.ui.notify("RAG 扩展已重载", "info");
+      return; // reload 是终止操作，之后不得再引用旧状态
     },
   });
 
-  // 会话启动时检查一次
-  pi.on("session_start", () => checkAndSchedule(pi));
-
-  // 每次工具调用前检查（最常见触发点）
-  pi.on("tool_call", () => checkAndSchedule(pi));
-
-  // 也监听文件系统变化（开发时连续改文件会多次触发）
-  if (existsSync(MAIN_EXT)) {
+  // 仅在会话启动（安全点）检查一次：有差异 → 提醒，绝不自动 reload
+  pi.on("session_start", async (_event, ctx) => {
     try {
-      watch(MAIN_EXT, () => checkAndSchedule(pi));
-    } catch (_) {
-      // watch 失败不影响主功能
+      if (needsReload(mtimeOf(SRC_EXT), mtimeOf(DST_EXT))) {
+        ctx.ui?.notify?.(
+          "RAG 扩展源码比部署副本新：请先运行 scripts/install_rag_extension.ps1，再执行 /rag-reload",
+          "info"
+        );
+      }
+    } catch {
+      // 提醒失败不影响主功能
     }
-  }
+  });
 }

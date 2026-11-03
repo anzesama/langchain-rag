@@ -17,8 +17,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import * as fs from "fs";
 import * as path from "path";
-// 导入热重载守护（注册 /rag-reload 命令）
-import rag_autoreload from "./rag_autoreload.ts";
+// 注：/rag-reload 命令由独立扩展 rag_autoreload.ts 注册（它会被 pi 自动加载），
+//     此处不再 import，避免重复注册。
 
 const RAG_API_BASE = process.env.RAG_API_BASE || "http://localhost:8765";
 const RAG_PORT =
@@ -26,13 +26,73 @@ const RAG_PORT =
 const RAG_HOME =
   process.env.RAG_HOME || "D:/class/project-config/langchain-rag";
 const RAG_START_SCRIPT = path.join(RAG_HOME, "scripts", "start_rag_server.ps1");
-// shell 可覆盖（测试用）：默认 pwsh，探测失败回退 powershell 5.1
-const RAG_SHELL = process.env.RAG_SHELL || "pwsh";
+// ── shell 解析（2026-11-03 修复）─────────────────────────────────────────
+// 事故根因：probeShell 曾用 `-v` 探活 → WinPS 5.1 把 `-v` 当 `-Version`（要参数）
+//   → 报错 → 永远探测失败 → startRagService 直接 return false → **从不 spawn**。
+//   且 PowerShell 7 不在 pi 进程的 PATH 里 → 必须用绝对路径。
+const PWSH_ABS = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
+const WINPS_ABS =
+  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 
-// 冷启动（torch + 模型加载）典型 40~90s；轮询预算收紧到 30s，避免死等阻塞 pi 主循环
-// （可被 AbortSignal 提前取消；可用 RAG_START_MAX_RETRIES 覆盖）
-const START_MAX_RETRIES = Number(process.env.RAG_START_MAX_RETRIES) || 30;
-const START_DELAY_MS = Number(process.env.RAG_START_DELAY_MS) || 1000;
+/** 候选 shell（有序）：显式覆盖 > pwsh 绝对路径 > 裸名 > WinPS 绝对路径 > 裸名 */
+export function shellCandidates(): string[] {
+  const override = process.env.RAG_SHELL;
+  return [
+    ...(override ? [override] : []),
+    PWSH_ABS,
+    "pwsh",
+    WINPS_ABS,
+    "powershell",
+  ];
+}
+
+/** 探活参数：`-Command exit 0` 对 pwsh 7 与 WinPS 5.1 通吃（绝不用 `-v`） */
+export function shellProbeArgs(): string[] {
+  return ["-NoProfile", "-NoLogo", "-Command", "exit 0"];
+}
+
+/** 启动参数：-File 指向唯一配置源脚本 */
+export function shellStartArgs(scriptPath: string): string[] {
+  return [
+    "-NoProfile",
+    "-NoLogo",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    scriptPath,
+  ];
+}
+
+// 冷启动（torch + 模型加载）典型 40~90s；预算给到 120s 以保证首次调用即成功。
+// 等待期间通过 onProgress 上报进度（避免「静默卡住」的错觉）。
+// （可被 AbortSignal 提前取消；可用 RAG_START_MAX_RETRIES / RAG_START_DELAY_MS 覆盖）
+/**
+ * 「找不到可用 shell」的错误文案（纯函数 → 可测）。
+ * 事故：旧版在模板串里插值 `${RAG_SHELL}`，但该标识符重构后已不存在 →
+ *   恰在需要这条提示时抛 ReferenceError，把友好提示吃掉。
+ * 现改为「列出真实尝试过的候选」，既不引用未声明标识符，排查信息也更多。
+ */
+export function noShellMessage(): string {
+  return (
+    "[ERROR] 未找到可用 shell，无法自动启动 RAG。" +
+    `已尝试: ${shellCandidates().join(", ")}. ` +
+    `请安装 PowerShell 7、或用 RAG_SHELL 指定可用的 shell，或手动运行 ${RAG_START_SCRIPT}`
+  );
+}
+
+export const START_MAX_RETRIES = Number(process.env.RAG_START_MAX_RETRIES) || 120;
+export const START_DELAY_MS = Number(process.env.RAG_START_DELAY_MS) || 1000;
+export const START_BUDGET_SEC = (START_MAX_RETRIES * START_DELAY_MS) / 1000;
+// 进度上报节流：每 N 秒提示一次（避免刷屏）
+export const PROGRESS_EVERY_SEC = Number(process.env.RAG_PROGRESS_EVERY_SEC) || 5;
+
+/**
+ * 冷启动进度提示文案（纯函数，可测）。
+ * 不含「超时/失败」字样 —— 等待期间不该让用户以为已经废了。
+ */
+export function progressMessage(elapsedSec: number): string {
+  return `正在启动 RAG 服务... 已等待 ${elapsedSec}s（冷启动典型 40~90s，请稍候）`;
+}
 // spawn 后判定「已拉起」的宽限期（ms）：宽限期内既未 connect 成功也未 error/exit → 视为已拉起
 const SPAWN_GRACE_MS = Number(process.env.RAG_SPAWN_GRACE_MS) || 3000;
 
@@ -54,11 +114,11 @@ async function isPortInUse(port: number): Promise<boolean> {
 // 前置探测：shell 是否可用（避免 spawn 静默失败后仍傻等 360s）
 export async function probeShell(shell?: string): Promise<string | null> {
   const { execFile } = await import("child_process");
-  const candidates = shell ? [shell] : [RAG_SHELL, "powershell"];
+  const candidates = shell ? [shell] : shellCandidates();
   for (const s of candidates) {
     try {
       await new Promise<void>((resolve, reject) => {
-        const p = execFile(s, ["-v"], { timeout: 3000 }, (err) =>
+        const p = execFile(s, shellProbeArgs(), { timeout: 5000 }, (err) =>
           err ? reject(err) : resolve()
         );
         p.unref?.();
@@ -81,24 +141,37 @@ export async function startRagService(): Promise<boolean> {
   // 前置探测：无可用 shell 立即 fail（避免未来换机没装 pwsh 又卡）
   const shell = await probeShell();
   if (!shell) {
-    console.error(
-      `[ERROR] 未找到可用 shell（${RAG_SHELL}/powershell），无法自动启动 RAG。请安装 PowerShell 7 或手动运行 ${RAG_START_SCRIPT}`
-    );
+    console.error(noShellMessage());
     return false;
   }
 
+  // 只记录 spawn 行（诊断用）。**子进程自身的输出不在这里** ——
+  // 服务自己落盘到 storage/rag.log（实测可靠），无需 node 侧捕获。
+  const logPath = path.join(RAG_HOME, "logs", "extension_start.log");
+  const logLine = (msg: string) => {
+    console.log(msg);
+    try {
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.appendFileSync(logPath, `${msg}\n`);
+    } catch {
+      // 日志不可写不致命
+    }
+  };
+  logLine(
+    `[${new Date().toISOString()}] spawn: ${shell} ${shellStartArgs(RAG_START_SCRIPT).join(" ")}`
+  );
+
   try {
     const { spawn } = await import("child_process");
-    const child = spawn(
-      shell,
-      ["-ExecutionPolicy", "Bypass", "-File", RAG_START_SCRIPT],
-      {
-        cwd: RAG_HOME,
-        stdio: "ignore",
-        // 不再 detached/unref：需被父进程观察 error/exit 以快速失败；
-        // 服务实际生命周期由 start_rag_server.ps1 的 idle 退出机制自管。
-      }
-    );
+    const child = spawn(shell, shellStartArgs(RAG_START_SCRIPT), {
+      cwd: RAG_HOME,
+      // ⚠️ 不要用 detached + fd-stdio 组合：2026-11-03 实测该组合下 pwsh 会**立刻以
+      //    code=0 退出**（服务根本没起来，且零输出）。stdio:"ignore" + 非 detached
+      //    实测可靠（python 长期存活）。诊断输出看 storage/rag.log。
+      stdio: "ignore",
+    });
+    // unref：pi 退出时不必等待服务（服务生命周期由 idle 看门狗自管）
+    child.unref();
 
     return await new Promise<boolean>((resolve) => {
       let settled = false;
@@ -107,8 +180,8 @@ export async function startRagService(): Promise<boolean> {
         settled = true;
         clearTimeout(grace);
         ok
-          ? console.log(`[INFO] RAG 服务已启动 (PID: ${child.pid}) ${why}`)
-          : console.error(`[ERROR] RAG 启动失败: ${why}（见上方日志）`);
+          ? logLine(`[INFO] RAG 服务已启动 (PID: ${child.pid}) ${why}`)
+          : logLine(`[ERROR] RAG 启动失败: ${why}（详见 ${logPath}）`);
         resolve(ok);
       };
 
@@ -127,16 +200,22 @@ export async function startRagService(): Promise<boolean> {
   }
 }
 
-// 等待服务就绪（轮询 /health）；预算 30s 可配 + 可被 signal 提前取消
+// 等待服务就绪（轮询 /health）；预算可配 + 可被 signal 提前取消 + 进度上报
 export async function waitForService(
   maxRetries: number = START_MAX_RETRIES,
   delayMs: number = START_DELAY_MS,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onProgress?: (elapsedSec: number) => void
 ): Promise<boolean> {
+  const progressEvery = Math.max(1, Math.round((PROGRESS_EVERY_SEC * 1000) / delayMs));
   for (let i = 0; i < maxRetries; i++) {
     if (signal?.aborted) {
       console.log(`[INFO] waitForService 被中断（第 ${i + 1} 轮前）`);
       return false;
+    }
+    // 每 PROGRESS_EVERY_SEC 秒上报一次已等待秒数
+    if (onProgress && i > 0 && i % progressEvery === 0) {
+      onProgress(Math.round((i * delayMs) / 1000));
     }
     const inUse = await isPortInUse(RAG_PORT);
     if (inUse) {
@@ -179,11 +258,13 @@ async function ragFetch(path: string, options?: RequestInit): Promise<Response> 
 export async function ragFetchWithAutoStart(
   path: string,
   options?: RequestInit,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onProgress?: (elapsedSec: number) => void
 ): Promise<Response> {
   const inUse = await isPortInUse(RAG_PORT);
   if (!inUse) {
     console.log(`[INFO] RAG 服务未运行，正在启动...`);
+    onProgress?.(0);
     const started = await startRagService();
     if (!started) {
       throw new Error(
@@ -191,11 +272,16 @@ export async function ragFetchWithAutoStart(
           `。请手动运行：pwsh -File ${RAG_START_SCRIPT}`
       );
     }
-    const ready = await waitForService(START_MAX_RETRIES, START_DELAY_MS, signal);
+    const ready = await waitForService(
+      START_MAX_RETRIES,
+      START_DELAY_MS,
+      signal,
+      onProgress
+    );
     if (!ready) {
-      // 快速失败：不再后台二次 spawn（避免重复拉起竞争），直接提示冷启动中/请手动常驻
+      // 预算耗尽：不再后台二次 spawn（避免重复拉起竞争），提示手动常驻
       throw new Error(
-        `RAG 服务冷启动较慢（超过 ${START_MAX_RETRIES * START_DELAY_MS / 1000}s 未就绪）` +
+        `RAG 服务冷启动超时（超过 ${START_BUDGET_SEC}s 未就绪）` +
           `。请手动启动：pwsh -File ${RAG_START_SCRIPT}；或设 RAG_IDLE_TIMEOUT_SEC=0 常驻。` +
           (signal?.aborted ? "（本次等待已被中断）" : "")
       );
@@ -247,7 +333,8 @@ export default function (pi: ExtensionAPI) {
             body: JSON.stringify({ query: params.query, top_k }),
             signal,
           },
-          signal
+          signal,
+          (sec) => onUpdate?.({ content: [{ type: "text", text: progressMessage(sec) }] })
         );
 
         const data = await resp.json();
@@ -310,7 +397,8 @@ export default function (pi: ExtensionAPI) {
             body: JSON.stringify({ file_path: params.file_path }),
             signal,
           },
-          signal
+          signal,
+          (sec) => onUpdate?.({ content: [{ type: "text", text: progressMessage(sec) }] })
         );
 
         const data = await resp.json();
@@ -361,7 +449,12 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       try {
-        const resp = await ragFetchWithAutoStart("/api/documents", undefined, signal);
+        const resp = await ragFetchWithAutoStart(
+          "/api/documents",
+          undefined,
+          signal,
+          (sec) => onUpdate?.({ content: [{ type: "text", text: progressMessage(sec) }] })
+        );
         const data = await resp.json();
 
         let result = `**知识库统计**:\n`;
@@ -420,7 +513,8 @@ export default function (pi: ExtensionAPI) {
             body: JSON.stringify({}),
             signal,
           },
-          signal
+          signal,
+          (sec) => onUpdate?.({ content: [{ type: "text", text: progressMessage(sec) }] })
         );
 
         const data = await resp.json();
@@ -441,7 +535,4 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // 注册 /rag-reload 命令 + 热重载守护
-  // （修复：此前只 import 未调用 → /rag-reload 命令未注册）
-  rag_autoreload(pi);
 }

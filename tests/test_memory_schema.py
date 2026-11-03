@@ -126,3 +126,43 @@ class TestLegacyMigration:
         finally:
             conn.close()
         assert {"idx_chunks_source", "idx_chunks_created"} <= idx
+
+
+class TestMigrationRaceSafety:
+    """两个进程同时启动时，重复 ALTER 不应让 __init__ 崩溃（审查发现 I3）。
+
+    注：SQLite **不支持** `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`（已实测 3.51.2 报语法错误），
+    因此必须靠捕获 OperationalError 实现幂等。
+    """
+
+    def test_add_column_helper_tolerates_duplicate(self, tmp_path):
+        db = tmp_path / "race.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute(LEGACY_SCHEMA)
+        # 模拟“另一进程”已经加过该列
+        conn.execute("ALTER TABLE chunks ADD COLUMN importance REAL DEFAULT 0.5")
+        conn.commit()
+
+        # 本进程的重复 ALTER 不应抛异常
+        VectorStoreManager._add_column_if_missing(
+            conn.cursor(), "importance", "REAL DEFAULT 0.5"
+        )
+        conn.close()
+
+    def test_migration_still_works_after_partial_race(self, tmp_path):
+        db = tmp_path / "knowledge_base.db"
+        _make_legacy_db(db)
+        conn = sqlite3.connect(str(db))
+        conn.execute("ALTER TABLE chunks ADD COLUMN importance REAL DEFAULT 0.5")
+        conn.execute("ALTER TABLE chunks ADD COLUMN access_count INTEGER DEFAULT 0")
+        conn.commit()
+        conn.close()
+
+        vs = VectorStoreManager(persist_dir=tmp_path)   # 补齐剩余 3 列
+
+        assert MEMORY_COLUMNS <= _columns(vs.db_path)
+        conn = sqlite3.connect(f"file:{vs.db_path}?mode=ro", uri=True)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 1
+        finally:
+            conn.close()

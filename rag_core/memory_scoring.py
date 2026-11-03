@@ -6,6 +6,9 @@
 
 保持「平铺模块 + 纯函数」，便于单测（YAGNI）。
 
+「纯」的边界：确定性的**语义纯函数**（同样的输入永远同样输出），
+唯一外部依赖是环境变量 `RAG_RECALL_HALF_LIFE`，且可被参数覆盖。
+
 ⚠️ 半衰期语义：`forgetting_decay` 的 `half_life_days` 是**真正的半衰期**，
    经过 1 个半衰期后记忆强度恰好剩 50%（`2 ** (-Δ/H)`）。
    设计草稿写的是 `exp(-Δ/H)`，那实际是「1/e 点」（36.8%），与「半衰期」之名不符 ——
@@ -37,7 +40,7 @@ ACCESS_BONUS_COEF = 0.1
 #: 重要性的中性基线（避免「无信号」文本被打到 0）
 BASE_IMPORTANCE = 0.3
 
-#: 文本过短罚分
+#: 文本过短罚分（按 Unicode 码点计数，CJK 字符计 1，故中文阈值≫英文观感）
 SHORT_TEXT_PENALTY = 0.15
 SHORT_TEXT_THRESHOLD = 50
 
@@ -69,6 +72,37 @@ _IMPORTANT_RE = [re.compile(p, re.IGNORECASE) for p in IMPORTANT_PATTERNS]
 
 
 # ------------------------------------------------------------------ 工具
+
+def _unit(value, default: float) -> float:
+    """安全地把任意输入钳成 [0, 1]。
+
+    - None / 非数值 / **NaN** → `default`（无有效信息，不臆测）
+    - ±inf → 按实数序钳到 1.0 / 0.0（inf 是有序值，不是“无信息”）
+    - 负数 / 超界 → 钳制
+
+    ⚠️ 为何不能用朴素的 `max(0.0, min(1.0, v))`：
+       `min(1.0, float('nan'))` 返回 **1.0**（NaN 比较恒为 False），
+       会把损坏向量的 NaN 相似度排到最前。
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if math.isnan(number):
+        return default
+    return max(0.0, min(1.0, number))
+
+
+def _safe_count(value) -> int:
+    """安全地把任意输入转成非负整数（None/NaN/inf/非数值 → 0）"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(number):
+        return 0
+    return max(0, int(number))
+
 
 def _resolve_half_life() -> float:
     """从环境变量读取半衰期，非法值回退默认"""
@@ -103,11 +137,21 @@ def _parse_time(value: Union[None, str, datetime]) -> Optional[datetime]:
 def compute_importance(text: str, source: str = "", metadata: Optional[dict] = None) -> float:
     """静态重要性评分（导入时一次性计算），返回 0.0 ~ 1.0。
 
-    规则版先行（Q1=C：规则引擎打底，灰区再交 LLM 复核）。
-    维度近似：有用性（关键词）/ 频率（来源）/ 时效性（长度）等。
+    **规则版 MVP**（Q1=C：规则打底，灰区后续再交 LLM 复核）。
+    当前实际覆盖的维度：有用性（关键词）/ 频率（来源权重）/ 时效性（长度），
+    尚未实现：新颖性 / 情感强度 / 关联度 —— 不要按「六维已全覆盖」理解。
+
+    :param metadata: 预留参数。Phase 2 的 LLM 复核会用到（TODO），当前不使用。
     """
-    text = text or ""
-    source = (source or "").lower()
+    if isinstance(text, str):
+        normalized = text
+    elif text is None:
+        normalized = ""
+    else:
+        # 外部脏数据不应让导入流程崩掉
+        normalized = str(text)
+    text = normalized
+    source = (source or "").lower() if isinstance(source, str) else ""
     score = BASE_IMPORTANCE
 
     # 1. 长度信号
@@ -177,15 +221,18 @@ def compute_final_score(
     - 重要性加成 ∈ [0.5, 1.0]
     - 访问加成 ∈ [1.0, 1.5]（封顶，防高频内容霸榜）
     - 软遗忘铁律：衰减只降权，**永不归零到「删除」**
+    - 鲁棒性：similarity/importance/decay/access_count 均经过安全钳制，
+      NaN/inf/None/非数值不会污染下游排序
     """
-    importance = max(0.0, min(1.0, float(importance or 0.0)))
-    decay = max(0.0, float(decay if decay is not None else 1.0))
-    count = max(0, int(access_count or 0))
+    similarity = _unit(similarity, 0.0)
+    importance = _unit(importance, 0.0)
+    decay = _unit(decay, 1.0)
+    count = _safe_count(access_count)
 
     importance_bonus = 0.5 + 0.5 * importance
     access_bonus = min(MAX_ACCESS_BONUS, 1.0 + ACCESS_BONUS_COEF * math.log1p(count))
 
-    return float(similarity) * importance_bonus * access_bonus * decay
+    return similarity * importance_bonus * access_bonus * decay
 
 
 # --------------------------------------------------------- 检索后强化
@@ -195,6 +242,6 @@ def update_after_retrieval(access_count: int, importance: float) -> Tuple[int, f
 
     （`last_access` 与 `consolidated` 由 DB 层负责，纯函数不做 IO。）
     """
-    new_count = max(0, int(access_count or 0)) + 1
-    new_importance = min(1.0, max(0.0, float(importance or 0.0)) * REINFORCE_FACTOR)
+    new_count = _safe_count(access_count) + 1
+    new_importance = min(1.0, _unit(importance, 0.0) * REINFORCE_FACTOR)
     return new_count, new_importance

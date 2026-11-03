@@ -192,3 +192,56 @@ class TestUpdateAfterRetrieval:
 
     def test_consolidation_threshold_is_three(self):
         assert CONSOLIDATE_THRESHOLD == 3
+
+
+# ------------------------------------------------ 鲁棒性（代码审查驱动）
+
+class TestRobustness:
+    """外部脏数据 / 损坏向量不应导致崩溃或排序污染。"""
+
+    @pytest.mark.parametrize("bad", [None, 123, 3.14, ["a"], {"k": "v"}, b"bytes"])
+    def test_importance_accepts_non_string_input(self, bad):
+        score = compute_importance(bad, "doc.txt")
+        assert 0.0 <= score <= 1.0
+
+    def test_final_score_clamps_negative_and_over_one_similarity(self):
+        assert compute_final_score(-0.5, 0.5, 1.0, 0) == pytest.approx(0.0)
+        assert compute_final_score(1.5, 0.5, 1.0, 0) == pytest.approx(1.0 * 0.75)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_final_score_neutralizes_non_finite_similarity(self, bad):
+        """NaN/±inf 一律不得被“提升”为高分。
+
+        规则：NaN（无大小关系）→ 0.0；-inf → 0.0；**+inf 属于可排序值**，
+        按常规钳到 1.0（即满分），不会超过上界。
+        """
+        expected = 0.0 if bad != float("inf") else 0.75
+        assert compute_final_score(bad, 0.5, 1.0, 0) == pytest.approx(expected)
+
+    def test_nan_similarity_never_outranks_valid_results(self):
+        """⚠️ 核心回归：NaN 若被钳成 1.0 会排到最前（min(1.0, nan) == 1.0）"""
+        nan_score = compute_final_score(float("nan"), 1.0, 1.0, 0)
+        good_score = compute_final_score(0.9, 1.0, 1.0, 0)
+        assert nan_score < good_score
+
+    def test_final_score_neutralizes_nan_importance(self):
+        assert compute_final_score(0.8, float("nan"), 1.0, 0) == pytest.approx(0.8 * 0.5)
+
+    def test_final_score_treats_bad_decay_as_fresh(self):
+        """decay 无有效信息时不惩罚（与 forgetting_decay(None)=1.0 一致）"""
+        assert compute_final_score(0.8, 0.5, float("nan"), 0) == pytest.approx(0.8 * 0.75)
+        assert compute_final_score(0.8, 0.5, None, 0) == pytest.approx(0.8 * 0.75)
+
+    def test_final_score_clamps_infinite_decay(self):
+        assert compute_final_score(0.8, 0.5, float("inf"), 0) == pytest.approx(0.8 * 0.75)
+        assert compute_final_score(0.8, 0.5, float("-inf"), 0) == pytest.approx(0.0)
+
+    @pytest.mark.parametrize("bad", [float("nan"), None, "abc"])
+    def test_final_score_survives_bad_access_count(self, bad):
+        assert compute_final_score(0.8, 0.5, 1.0, bad) == pytest.approx(0.8 * 0.75)
+
+    @pytest.mark.parametrize("bad", [float("nan"), None, "abc"])
+    def test_update_after_retrieval_survives_bad_inputs(self, bad):
+        count, importance = update_after_retrieval(bad, bad)
+        assert count >= 1
+        assert 0.0 <= importance <= 1.0

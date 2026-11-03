@@ -121,8 +121,25 @@ class VectorStoreManager:
         existing = {row[1] for row in cursor.execute("PRAGMA table_info(chunks)").fetchall()}
         for name, ddl in MEMORY_COLUMNS:
             if name not in existing:
-                cursor.execute(f"ALTER TABLE chunks ADD COLUMN {name} {ddl}")
-                logger.info(f"记忆字段迁移完成: chunks.{name}")
+                VectorStoreManager._add_column_if_missing(cursor, name, ddl)
+
+    @staticmethod
+    def _add_column_if_missing(cursor, name: str, ddl: str) -> None:
+        """加列，容忍并发迁移下的重复列（幂等）。
+
+        ⚠️ SQLite **不支持** `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
+        （实测 3.51.2 报 `near "EXISTS": syntax error`），只能捕获 OperationalError。
+        若不捕获：两个进程同时启动时，后一个的 ALTER 会抛错 → 冒泡到
+        `_init_database` 的 except → 整个 `VectorStoreManager.__init__` 失败。
+        """
+        try:
+            cursor.execute(f"ALTER TABLE chunks ADD COLUMN {name} {ddl}")
+            logger.info(f"记忆字段迁移完成: chunks.{name}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" in str(e).lower():
+                logger.debug(f"记忆字段已存在，跳过: chunks.{name}")
+                return
+            raise
 
     def _vector_to_blob(self, vector: List[float]) -> bytes:
         """将向量转换为 BLOB 格式"""
@@ -248,32 +265,43 @@ class VectorStoreManager:
             importance, access_count, last_access = self._memory_fields(all_chunks[i])
             decay = forgetting_decay(last_access, now)
             final = compute_final_score(float(sims[i]), importance, decay, access_count)
-            # 稳定排序：final 相同时按原始相似度
-            scored.append((-final, -float(sims[i]), i, importance, access_count, decay, last_access))
+            scored.append({
+                "score": final,
+                "similarity": float(sims[i]),
+                "index": i,
+                "importance": importance,
+                "access_count": access_count,
+                "decay": decay,
+                "last_access": last_access,
+            })
 
-        scored.sort()
+        # 显式排序键：综合分降序 → 相似度降序 → 行号升序。
+        # ⚠️ 不要直接 `sort()` 整个元组：尾部含 last_access（可为 None 或 datetime），
+        #    一旦前面各元素全部相等就会退化为 datetime vs None 比较 → TypeError。
+        scored.sort(key=lambda item: (-item["score"], -item["similarity"], item["index"]))
         top = scored[:k]
 
-        self._reinforce([item[2] for item in top], all_chunks, now)
+        self._reinforce([item["index"] for item in top], all_chunks, now)
 
         results: List[Tuple[dict, float]] = []
-        for neg_final, _neg_sim, i, importance, access_count, decay, last_access in top:
+        for item in top:
+            i = item["index"]
             row = all_chunks[i]
             metadata_json = row[2]
             metadata = dict(json.loads(metadata_json) if metadata_json else {})
             metadata.update({
-                "importance": importance,
-                "access_count": access_count,
-                "last_access": str(last_access) if last_access else None,
-                "similarity": float(sims[i]),
-                "decay": decay,
-                "memory_score": -neg_final,
+                "importance": item["importance"],
+                "access_count": item["access_count"],
+                "last_access": str(item["last_access"]) if item["last_access"] else None,
+                "similarity": item["similarity"],
+                "decay": item["decay"],
+                "memory_score": item["score"],
             })
             results.append(({
                 'chunk_id': row[0],
                 'metadata': metadata,
                 'text_content': row[3],
-            }, -neg_final))
+            }, item["score"]))
         return results
 
     def _reinforce(self, indices: List[int], all_chunks: list, now: datetime) -> None:
@@ -299,6 +327,10 @@ class VectorStoreManager:
                         (new_count, new_importance, timestamp, consolidated, chunk_id),
                     )
                 conn.commit()
+            except Exception:
+                # 显式回滚：单条 UPDATE 失败时不留下部分写入
+                conn.rollback()
+                raise
             finally:
                 conn.close()
         except Exception as e:
@@ -492,7 +524,10 @@ class VectorStoreManager:
                     "ORDER BY access_count DESC, importance DESC LIMIT ?",
                     (DEFAULT_IMPORTANCE, int(top_n)),
                 ).fetchall()
-                last_access_rows = conn.execute("SELECT last_access FROM chunks").fetchall()
+                # 只取有 last_access 的行：NULL 行 decay 恒为 1.0，不可能低于阈值
+                last_access_rows = conn.execute(
+                    "SELECT last_access FROM chunks WHERE last_access IS NOT NULL"
+                ).fetchall()
             finally:
                 conn.close()
 

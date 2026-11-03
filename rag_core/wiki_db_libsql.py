@@ -15,6 +15,8 @@ from typing import List, Dict, Optional, Any
 import logging
 import hashlib
 
+from rag_config import LIBSQL_DICTIONARY_PATH   # noqa: F401  （测试隔离靠 patch 本模块此名）
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,10 +57,23 @@ class WikiDB:
         self.storage_dir = project_root / "storage"
 
         # 使用统一的 libsql 数据库文件存储所有数据
+        # ⚠️ 默认路径取自 rag_config 的常量（而不是从 __file__ 推算），
+        #    这样测试才能通过 monkeypatch 该常量实现 DB 隔离 —— 否则
+        #    测试会直连生产 storage/knowledge_base.db（2026-11-03 事故同类风险）。
         if db_path is None:
-            self.db_path = str(self.storage_dir / "knowledge_base.db")
+            default_path = globals().get("LIBSQL_DICTIONARY_PATH")
+            if default_path is None:
+                default_path = self.storage_dir / "knowledge_base.db"
+            self.db_path = str(default_path)
         else:
             self.db_path = db_path
+
+        # 确保父目录存在，否则 sqlite3 报 "unable to open database file"
+        # （测试隔离到 tmp_path 时该目录尚未创建）
+        try:
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(f"创建 WikiDB 目录失败: {type(e).__name__}: {e}")
 
         self.conn = None
 

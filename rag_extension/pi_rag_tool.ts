@@ -311,14 +311,14 @@ export default function (pi: ExtensionAPI) {
       }),
       top_k: Type.Optional(
         Type.Number({
-          description: "返回的最大结果数，默认 5",
+          description: "返回的最大结果数，默认 3（保守值防止上下文爆炸）",
           minimum: 1,
-          maximum: 20,
+          maximum: 10,
         })
       ),
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const top_k = params.top_k ?? 5;
+      const top_k = params.top_k ?? 3; // 默认 3，避免上下文膨胀
 
       onUpdate?.({
         content: [{ type: "text", text: `正在搜索: "${params.query}"...` }],
@@ -340,10 +340,13 @@ export default function (pi: ExtensionAPI) {
         const data = await resp.json();
 
         // 格式化检索片段（答案由 pi 模型自行综合）
+        // 注意：服务端已截断到 MAX_CONTENT_PER_CHUNK=200，此处再压缩格式
+        const MAX_PREVIEW = 150; // 每个 chunk 预览字符数
         let result = `**检索片段（请基于以下内容回答，并注明来源）**:\n\n`;
         for (const src of data.sources || []) {
-          result += `- [${src.source}] (相似度: ${src.score})\n`;
-          result += `  ${src.content.substring(0, 300)}\n`;
+          const preview = src.content?.substring(0, MAX_PREVIEW) ?? '';
+          result += `- [${src.source}] (score:${src.score.toFixed(2)})\n`;
+          if (preview) result += `  ${preview}\n`;
         }
         if (!data.sources || data.sources.length === 0) {
           result += "（知识库无相关片段）\n";

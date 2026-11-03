@@ -1,7 +1,7 @@
 # 脑启发性记忆 RAG + 向量检索优化 —— 实施计划（草案）
 
 > 创建时间：2026-11-03
-> 状态：**⏳ 草案，待用户确认 Q1/Q2 后转正式**
+> 状态：**✅ 决策已确认（Q1=C / Q2=A / Q3=甲），待执行**
 > 关联设计：`docs/plans/2026-11-03-brain-inspired-memory-rag-design.md`
 > 关联调研：`documents/research_brain-inspired-rag.md`、`documents/research_vector-search.md`
 
@@ -108,8 +108,10 @@ def compute_importance(text: str, metadata: dict) -> float:
     返回 0.0 ~ 1.0
     """
 
-def forgetting_decay(last_access, now, half_life_days=30.0) -> float:
-    """艾宾浩斯软遗忘：exp(-Δt / half_life)  → 0~1"""
+def forgetting_decay(last_access, now, half_life_days=7.0) -> float:
+    """艾宾浩斯软遗忘：exp(-Δt / half_life)  → 0~1
+    Q2=A：默认半衰期 7 天（可用 RAG_RECALL_HALF_LIFE 覆盖）
+    """
 
 def compute_final_score(similarity, importance, decay, access_count) -> float:
     """综合评分：similarity × f(importance, decay, access_count)"""
@@ -191,14 +193,14 @@ def update_after_retrieval(access_count, importance) -> tuple[int, float]:
 
 ---
 
-## 8. 待用户确认（阻塞项）
+## 8. 决策记录（已确认 2026-11-03）
 
-- **Q1**：重要性评分方案 — A 规则引擎 / B LLM 评估 / **C 混合（推荐）**
-- **Q2**：遗忘半衰期 — A 7 天 / **B 30 天（推荐）** / C 环境变量可调
-- **Q3**（本轮新增）：是否先修 P0（测试隔离 + 检索向量化）再做 Phase 1？
-  - **甲：先修 P0**（推荐，地基优先）
-  - 乙：并行推进
-  - 丙：只做 Phase 1
+- **Q1 = C**：重要性评分采用**混合方案**（规则引擎打底 + LLM 复核灰区）
+- **Q2 = A**：遗忘半衰期 **7 天**（`RAG_RECALL_HALF_LIFE` 可覆盖）
+- **Q3 = 甲**：**先修 P0**（测试隔离 + 检索向量化），再进 Phase 1
+
+### 仍未决（不阻塞 P0/Phase 1）
+- `storage/*.db`（118MB）是否移出 git 跟踪？当前 `.git` 已 **438MB**
 
 ---
 

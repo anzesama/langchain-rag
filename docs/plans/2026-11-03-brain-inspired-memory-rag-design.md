@@ -2,6 +2,19 @@
 
 > 设计日期：2026-11-03
 > 核心灵感：艾宾浩斯遗忘曲线 + 突触可塑性 + 现代 RAG 记忆系统研究
+> 状态：**✅ 决策已确认，进入实施**
+
+---
+
+## 零、决策记录（已确认 2026-11-03）
+
+| 编号 | 议题 | 决策 | 含义 |
+|------|------|------|------|
+| **Q1** | 重要性评分方案 | **C = 混合** | 导入时用**规则引擎**快速打分（零成本、可单测），对分数处于灰区（如 0.4~0.6）或 `episodic` 候选者再调 **LLM 复核** |
+| **Q2** | 软遗忘半衰期 | **A = 7 天** | `RECALL_HALF_LIFE = 7.0`。遗忘更快、记忆更"短命"，突出近期/高频内容；可用 `RAG_RECALL_HALF_LIFE` 覆盖 |
+| **Q3** | 执行顺序 | **甲 = 先修 P0** | 先做测试 DB 隔离 + 检索向量化，再进 Phase 1 |
+
+> ⚠️ Q2=7 天意味着：30 天后权重衰减到 `exp(-30/7) ≈ 1.4%`。**软遗忘只降权不删除**，且支持手动 pin，因此可逆。
 
 ---
 
@@ -192,7 +205,7 @@ def compute_final_score(base_score: float, chunk: Chunk) -> float:
     
     # 4. 遗忘衰减（长时间未访问则降权）
     days_since = (now() - chunk.last_access).days
-    forgetting_decay = exp(-days_since / RECALL_HALF_LIFE)  # 30天半衰期
+    forgetting_decay = exp(-days_since / RECALL_HALF_LIFE)  # RECALL_HALF_LIFE=7（Q2=A）
     
     # 5. 综合分数
     final_score = similarity * importance_bonus * access_bonus * forgetting_decay

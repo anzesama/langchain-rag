@@ -191,6 +191,15 @@ python scripts/rag_cli.py view
 - ✅ 查询向量缓存（避免重复 embedding）
 - ✅ ChromaDB 预热（避免首次搜索冷启动）
 
+### 🧠 脑启发性记忆层（Phase 1，默认关闭）
+- ✅ **静态重要性评分**（规则引擎打底：长度信号 + 4 类关键词 + 来源权重）
+- ✅ **软遗忘**（艾宾浩斯**真半衰期**，默认 7 天，`RAG_RECALL_HALF_LIFE` 可覆盖）——只降权不删除
+- ✅ **检索即强化**（命中后 `access_count` +1、`importance` ×1.05，达阈值标记 `consolidated`）
+- ✅ **可观测端点** `GET /api/memories/stats`（总数 / 语义 / 情景 / 已巩固 / 平均重要性 / 高访问 / 已衰减）
+- ⚙️ **开关**：`RAG_MEMORY_ENABLED=1` 启用（**关闭时行为与旧版完全一致**，零风险回滚）
+- 🔒 **零侵入迁移**：`chunks` 表新增 5 列（`importance` / `access_count` / `last_access` / `memory_type` / `consolidated`，均有默认值）
+- 📄 设计/计划：`docs/plans/2026-11-03-brain-inspired-memory-rag-{design,plan}.md`；调研：`documents/research_brain-inspired-rag.md`
+
 ### 服务管理
 - ✅ RAG 服务自动启动（pi 扩展中集成）
 - ✅ 健康检查端点

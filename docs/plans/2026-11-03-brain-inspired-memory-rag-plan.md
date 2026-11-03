@@ -1,7 +1,8 @@
 # 脑启发性记忆 RAG + 向量检索优化 —— 实施计划（草案）
 
 > 创建时间：2026-11-03
-> 状态：**✅ P0 已修复 + Phase 1 已实施（2026-11-04）**
+> 状态：**✅ P0 已修复 + Phase 1 已实施 + Review 已通过（2026-11-04）**
+> 最新更新：2026-11-04（Review 阶段发现 2 个 Critical，已修复并清理残留污染）
 > 关联设计：`docs/plans/2026-11-03-brain-inspired-memory-rag-design.md`
 > 关联调研：`documents/research_brain-inspired-rag.md`、`documents/research_vector-search.md`
 
@@ -20,7 +21,7 @@
 
 ---
 
-## 1. P0-1：知识库数据事故（🔴 已恢复，机制待修）
+## 1. P0-1：知识库数据事故（✅ 已恢复 + 隔离机制已加固）
 
 ### 事故现象
 - 服务 `/health` 报告 `total_documents = 12572 ~ 12586`
@@ -38,9 +39,9 @@
 ### 遗留待办
 | # | 事项 | 优先级 |
 |---|------|--------|
-| P0-1a | 新增 `tests/conftest.py`：所有向量库测试使用 **临时目录 DB**（`tmp_path`），禁止触碰 `storage/` | 高 |
-| P0-1b | `storage/*.db`、`*.index`、`id_map.pkl` **移出 git 跟踪**（>100MB 二进制入库不当）→ `.gitignore` | 中 |
-| P0-1c | 处理 `stash@{0}` 中未提交代码：`get_chunks_by_source()`、`doc.id = chunk_id`（见 §1.1） | 中 |
+| P0-1a | 新增 `tests/conftest.py`：所有向量库测试使用 **临时目录 DB**（`tmp_path`），禁止触碰 `storage/` | ✅ 已完成（`730c93c`，Review 阶段**再次加固**） |
+| P0-1b | `storage/*.db`、`*.index`、`id_map.pkl` **移出 git 跟踪**（>100MB 二进制入库不当）→ `.gitignore` | ✅ 已完成（`6ef1727`，方案甲） |
+| P0-1c | 处理 `stash@{0}` 中未提交代码：`get_chunks_by_source()`、`doc.id = chunk_id`（见 §1.1） | ⏳ 待用户裁决 |
 
 ### 1.1 stash 中的未提交代码（待用户裁决）
 
@@ -147,6 +148,8 @@ def update_after_retrieval(access_count, importance) -> tuple[int, float]:
 | 5 | `update_after_retrieval()` | 同上 | 纯函数单测 | ✅ |
 | 6 | 检索接入（开关控制） | `vector_store_libsql.py` | `test_memory_retrieval.py`（12） | ✅ |
 | 7 | `/api/memories/stats` | `rag_server_v2.py` | `test_memory_stats.py`（10） | ✅ |
+| 8 | 记忆层鲁棒性（NaN/±inf/非 str/迁移竞态） | `memory_scoring.py`、`vector_store_libsql.py` | 新增 20 项 | ✅ |
+| 9 | 测试隔离彻底化 + 守卫覆盖面 | `tests/conftest.py`、`wiki_db_libsql.py` | `test_guard_coverage.py`（13） | ✅ |
 
 > 纯函数单测共 **35 项**（`test_memory_scoring.py`），覆盖长度/关键词/来源权重/半衰期/边界/封顶。
 
@@ -159,6 +162,60 @@ def update_after_retrieval(access_count, importance) -> tuple[int, float]:
    原始余弦相似度放在 `metadata["similarity"]`。关闭时不变。
 
 ---
+
+### 3.6 Review 阶段发现与加固（2026-11-04）
+
+> 完整报告：`docs/reviews/2026-11-04-phase1-memory-review.md`
+> 方式：2 个 code-reviewer 子代理 + 1 次人工实证（范围 C 子代理派发失败：403 并行 / 429 限流 / 120s 无响应）
+> 原则：**所有审查结论先实证再采信** —— 14 项发现中 **4 项为误报**，已驳回并写明理由
+
+#### 🔴 Critical 1：测试一直在写生产库（守卫升级后才抓到）
+
+前两次事故（13198→690、+607 块）的**清场并不彻底** —— 守卫只盯 3 个文件，给了虚假安全感。
+
+```
+id_map.pkl:        +173B
+knowledge_base.db: size 不变、mtime 变   ← INSERT OR REPLACE，只看 size/行数必然漏报
+novel_lsh.index:   +256B
+```
+
+**根因（三层，逐层实证）**：
+1. `WikiDB` 默认路径**从 `__file__` 推算**而非读 `rag_config` 常量 → monkeypatch 无效；且 `get_wiki_db()` 是**全局单例**
+2. `conftest` 扫描 `sys.modules` 批量 patch 时，**把自身的 `STORAGE_DIR` 也 patch 了** → 后续 `_is_under(v, STORAGE_DIR)` 的比较基准被污染 → `rag_config.*` 一个都没 patch 上（探测输出 `patched 1`，本该 ~10）
+3. 旧守卫覆盖面太窄（`vector_store.db` / `wiki.db` / `progress_*.json` / `global_counter.json` 全裸奔）
+
+**修复**：`PRODUCTION_STORAGE` 不可变基准 + 跳过 conftest 自身 + 守卫覆盖 `storage/` 全量（排除 `*.log`）+ `WikiDB` 改走配置常量 + 重置单例。
+
+> ✅ 教训：**窄守卫比没有守卫更危险**（虚假安全感）；指纹必须用 `(size, mtime_ns)` 而非计数/size；验收隔离要看**实际路径**而不是“守卫没报警”。
+
+#### 🔴 Critical 2：NaN 相似度会排到**最前**
+
+`max(0.0, min(1.0, nan)) == 1.0`（NaN 比较恒为 False）→ 损坏向量直接霸榜。
+修复：`memory_scoring._unit()` 统一钳制（NaN→default；±inf 按实数序）；`_safe_count()` 防 NaN 计数。
+
+#### 🟡 Important
+
+- DB 迁移并发 → `duplicate column` → `VectorStoreManager.__init__` 崩溃 → `_add_column_if_missing()` 捕获 `sqlite3.OperationalError`
+  - ⚠️ 审查建议的 `ADD COLUMN IF NOT EXISTS` **SQLite 并不支持**（实测 3.51.2 语法错误）→ 改用 try/except
+- `_reinforce` 加显式 `rollback()`；`get_memories_stats` 加 `WHERE last_access IS NOT NULL`
+- `_memory_rerank` 改显式排序键（原元组排序尾部混有 `None`/`datetime`，理论可 `TypeError`）
+
+#### ❌ 被驳回的误报（4 项）
+
+| 审查结论 | 实证 |
+|---------|------|
+| `.{0,6}` 正则跨行匹配 | 不成立 — Python `.` 默认不匹配 `\n`（实测 False） |
+| 测试注释写 “1 microsecond” | 不成立 — 代码中无此注释（幻觉） |
+| `_reinforce` 逐条 UPDATE 会部分提交 | 不成立 — `isolation_level=''` 隐式事务，提交原子 |
+| 建议改 `ADD COLUMN IF NOT EXISTS` | **建议本身有误** — SQLite 不支持 |
+
+#### 🧹 残留污染清理
+
+审计出测试窗口写入的 **10 块**（`_pytest_*` / `test*.txt|md|json` / `subdir\nested.txt` / `integration_test.txt`）→ 先备份 `knowledge_base.db.pre-testfix-20261104` → 按**精确 chunk_id** 删除 → **12596 → 12586**，残留测试命名源：无。
+
+---
+
+> 本轮提交：`10424db`（fix）、`66ae7df`（复盘）
 
 ## 4. Phase 2：向量检索优化（Tier 1）
 
@@ -187,13 +244,14 @@ def update_after_retrieval(access_count, importance) -> tuple[int, float]:
 
 | 编号 | 验收项 | 通过条件 | 状态 |
 |------|--------|---------|------|
-| V1 | 测试隔离 | `pytest` 全量跑完后 `chunks` 计数**不变** | ✅ 守卫零触发（12591 不变） |
+| V1 | 测试隔离 | `pytest` 全量跑完后 `chunks` 计数**不变** | ✅ 守卫零触发（**12586** 不变，已升级为全目录守卫） |
 | V2 | KB 完整性 | 生产库记忆列已迁移且数据无损 | ✅ 5 列已加，12591 不变 |
 | V3 | 检索性能 | `_cosine_similarity_query` 在 N=20000 下 **< 0.35s** | ✅ 0.239s（回归测试） |
 | V4 | 记忆开关 | `RAG_MEMORY_ENABLED=0` 时行为与旧版**逐字节一致** | ✅ 12 项测试（含“不写库”） |
 | V5 | 纯函数测试 | `memory_scoring` 单测覆盖 6 维度边界 | ✅ 35 passed |
 | V6 | 可观测性 | `/api/memories/stats` 返回结构正确 | ✅ 10 passed + 生产库实测 |
-| V7 | 回归 | `node --test` + `pytest` 目标测试全绿 | ✅ node 25 / pytest 116 |
+| V7 | 回归 | `node --test` + `pytest` 目标测试全绿 | ✅ node 25 / pytest **178 passed**（1 failed 为预存 `test_path_config`）/ 0 errors |
+| V8 | 隔离实证 | 测试内构造 `UnifiedImporter`，`vs.db_path` 与 `wiki_db.db_path` 必须都落在 `tmp_path` | ✅ 探测确认（Review 阶段新增） |
 
 ---
 
@@ -215,15 +273,21 @@ def update_after_retrieval(access_count, importance) -> tuple[int, float]:
 - **Q3 = 甲**：**先修 P0**（测试隔离 + 检索向量化），再进 Phase 1
 
 ### 仍未决（不阻塞 P0/Phase 1）
-- `storage/*.db`（118MB）是否移出 git 跟踪？当前 `.git` 已 **438MB**
+- ~~`storage/*.db`（118MB）是否移出 git 跟踪？~~ → **已决（2026-11-04，方案甲）**：移出跟踪 + `.gitignore`，**保留历史不做 filter-repo**；`.git` 仍 438MB
+- `stash@{0}` **仍待裁决**（含 `get_chunks_by_source()` / `doc.id = chunk_id`；⚠️ 含过时 `.cn` 配置，**不可整体 pop**）
+- 备份文件去留：`knowledge_base.db.pre-cleanup-20261104`、`.pre-testfix-20261104`（各 118MB）
 
 ---
 
-## 9. 产出物清单（预期）
+## 9. 产出物清单
 
 - 🆕 `rag_core/memory_scoring.py`
 - ✏️ `rag_core/vector_store_libsql.py`（迁移 + 向量化）
 - ✏️ `scripts/rag_server_v2.py`（`/api/memories/stats`）
 - 🆕 `tests/conftest.py`（DB 隔离）
-- 🆕 `tests/test_memory_scoring.py`、`tests/test_memory_schema.py`
+- 🆕 `tests/test_memory_scoring.py`、`tests/test_memory_schema.py`、`tests/test_memory_retrieval.py`、`tests/test_memory_stats.py`
+- 🆕 `tests/test_guard_coverage.py`（守卫覆盖面，13 项）
+- 🆕 `docs/reviews/2026-11-04-phase1-memory-review.md`（Review 报告）
+- ✏️ `rag_core/wiki_db_libsql.py`（默认路径走配置常量 + 自动建父目录）
+- ✏️ `tests/conftest.py`（不可变基准 + 全目录守卫）
 - ✏️ `.gitignore`（storage 二进制）

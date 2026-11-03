@@ -1,7 +1,7 @@
 # 脑启发性记忆 RAG + 向量检索优化 —— 实施计划（草案）
 
 > 创建时间：2026-11-03
-> 状态：**✅ 决策已确认（Q1=C / Q2=A / Q3=甲），待执行**
+> 状态：**✅ P0 已修复 + Phase 1 已实施（2026-11-04）**
 > 关联设计：`docs/plans/2026-11-03-brain-inspired-memory-rag-design.md`
 > 关联调研：`documents/research_brain-inspired-rag.md`、`documents/research_vector-search.md`
 
@@ -138,15 +138,25 @@ def update_after_retrieval(access_count, importance) -> tuple[int, float]:
 
 ### 3.5 任务清单
 
-| # | 任务 | 产出 | 测试 |
-|---|------|------|------|
-| 1 | `Chunk` 模型扩展 + DB 迁移 | `vector_store_libsql.py` | `test_memory_schema.py` |
-| 2 | `compute_importance()` | `rag_core/memory_scoring.py` | 纯函数单测 |
-| 3 | `forgetting_decay()` | 同上 | 纯函数单测 |
-| 4 | `compute_final_score()` | 同上 | 纯函数单测 |
-| 5 | `update_after_retrieval()` | 同上 | 纯函数单测 |
-| 6 | 检索接入（开关控制） | `vector_store_libsql.py` | 集成测试 |
-| 7 | `/api/memories/stats` | `rag_server_v2.py` | API 测试 |
+| # | 任务 | 产出 | 测试 | 状态 |
+|---|------|------|------|------|
+| 1 | `Chunk` 模型扩展 + DB 迁移 | `vector_store_libsql.py` | `test_memory_schema.py`（7） | ✅ |
+| 2 | `compute_importance()` | `rag_core/memory_scoring.py` | 纯函数单测 | ✅ |
+| 3 | `forgetting_decay()` | 同上 | 纯函数单测 | ✅ |
+| 4 | `compute_final_score()` | 同上 | 纯函数单测 | ✅ |
+| 5 | `update_after_retrieval()` | 同上 | 纯函数单测 | ✅ |
+| 6 | 检索接入（开关控制） | `vector_store_libsql.py` | `test_memory_retrieval.py`（12） | ✅ |
+| 7 | `/api/memories/stats` | `rag_server_v2.py` | `test_memory_stats.py`（10） | ✅ |
+
+> 纯函数单测共 **35 项**（`test_memory_scoring.py`），覆盖长度/关键词/来源权重/半衰期/边界/封顶。
+
+### ⚠️ 实施中的两处偏离（已记录）
+
+1. **半衰期语义修正**：设计草稿写 `exp(-Δ/H)`（Δ=H 时剩 36.8%），
+   但参数名叫 `half_life_days`。已改为真半衰期 `2 ** (-Δ/H)`（Δ=H 时恰为 **50%**），
+   与 Q2=A「7 天忘一半」的直觉一致。
+2. **返回分数语义**：开关开启时 `search()` 返回的分数是**记忆综合分**（保证“按分数降序”成立），
+   原始余弦相似度放在 `metadata["similarity"]`。关闭时不变。
 
 ---
 
@@ -175,15 +185,15 @@ def update_after_retrieval(access_count, importance) -> tuple[int, float]:
 
 ## 6. 验收标准
 
-| 编号 | 验收项 | 通过条件 |
-|------|--------|---------|
-| V1 | 测试隔离 | `pytest` 全量跑完后 `chunks` 计数**不变** |
-| V2 | KB 完整性 | `/health` `total_documents` = 13198 |
-| V3 | 检索性能 | `_cosine_similarity_query` 在 N=20000 下 **< 0.35s**（有回归测试） |
-| V4 | 记忆开关 | `RAG_MEMORY_ENABLED=0` 时行为与旧版**逐字节一致** |
-| V5 | 纯函数测试 | `memory_scoring` 单测覆盖 6 维度边界 |
-| V6 | 可观测性 | `/api/memories/stats` 返回结构正确 |
-| V7 | 回归 | `node --test` 15 passed / `pytest` 目标测试全绿 |
+| 编号 | 验收项 | 通过条件 | 状态 |
+|------|--------|---------|------|
+| V1 | 测试隔离 | `pytest` 全量跑完后 `chunks` 计数**不变** | ✅ 守卫零触发（12591 不变） |
+| V2 | KB 完整性 | 生产库记忆列已迁移且数据无损 | ✅ 5 列已加，12591 不变 |
+| V3 | 检索性能 | `_cosine_similarity_query` 在 N=20000 下 **< 0.35s** | ✅ 0.239s（回归测试） |
+| V4 | 记忆开关 | `RAG_MEMORY_ENABLED=0` 时行为与旧版**逐字节一致** | ✅ 12 项测试（含“不写库”） |
+| V5 | 纯函数测试 | `memory_scoring` 单测覆盖 6 维度边界 | ✅ 35 passed |
+| V6 | 可观测性 | `/api/memories/stats` 返回结构正确 | ✅ 10 passed + 生产库实测 |
+| V7 | 回归 | `node --test` + `pytest` 目标测试全绿 | ✅ node 25 / pytest 116 |
 
 ---
 

@@ -244,3 +244,36 @@
 
 ## ➡️ 下一步
 - Phase 1：`Chunk` 模型扩展 + `rag_core/memory_scoring.py` 纯函数 + `RAG_MEMORY_ENABLED` 开关 + `/api/memories/stats`
+
+---
+
+# 阶段复盘：Execute（Phase 1 脑启发性记忆层）
+- 时间：2026-11-04 02:15
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- **纯函数先行**：`memory_scoring.py` 零 IO、零全局状态，35 项单测覆盖长度/关键词/来源权重/半衰期/封顶边界，测试 2 秒跑完
+- **零侵入迁移**：`ALTER TABLE ADD COLUMN` + 幂等 + 有默认值 → 可回滚；专门测了「旧库升级不丢数据」（事故教训直接变成测试）
+- **开关隔离彻底**：`RAG_MEMORY_ENABLED` 关闭时不重排/不加 metadata/**不写库**，三点都有测试
+- **主动标注偏离**：半衰期语义（`exp(-Δ/H)` → `2^(-Δ/H)`）与返回分数语义两处偏离设计，已在计划文档明确记录
+
+## 📝 未完成事项
+- Phase 2 剩余项（向量预归一化 / `_query_cache` 命中率 / 接入 `HybridRetriever`）
+- Phase 3（HNSW / int8 量化 / 双轨存储）— 可选长期
+- `stash@{0}` 仍未裁决
+- 情景记忆（episodic）当前为 0 —— 须先有「重要时刻」写入方（Phase 3）
+
+## 🐛 遇到的问题
+- **测试输入长度踩到自己的阈值**：`test_very_short_text_is_penalized` 的「正常文本」只有 42 字，同样落入 `<50` 罚分 → 修正为 70 字（测试输入问题，非实现问题）
+- **多行 edit 因一个不匹配的 oldText 整体失败**：工具是原子的 → 去掉多余的第三个 edit 重发
+
+## 📦 产出物
+- `rag_core/memory_scoring.py`（新，纯函数）
+- `rag_core/vector_store_libsql.py`（迁移 + 记忆重排 + 统计）
+- `scripts/rag_server_v2.py`（`GET /api/memories/stats`）
+- 测试：`test_memory_scoring.py`(35) / `test_memory_schema.py`(7) / `test_memory_retrieval.py`(12) / `test_memory_stats.py`(10)
+- 验收：V1–V7 全部通过（node 25 / pytest 116）
+
+## ➡️ 下一步
+- Review 阶段（派发 code-reviewer 子代理）
+- 或先做 Phase 2/3

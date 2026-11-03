@@ -212,3 +212,35 @@
 ## ➡️ 下一步
 - 用户裁决性能项 → 若优化则走 brainstorming（会改变检索质量，属设计级变更）
 - 之后进入 Review / Finish 阶段
+
+---
+
+# 阶段复盘：Execute（P0 地基修复）
+- 时间：2026-11-04 01:30
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- **TDD 全程守规矩**：P0-1a 用「DB 文件指纹」而非「chunk 计数」做守卫（计数法漏掉了 `INSERT OR REPLACE` 的污染）；P0-2 先 RED（0.520s）后 GREEN（0.239s）
+- **追根因而非打补丁**：`VectorStoreManager.__init__` 忽略 `persist_dir` 才是污染根因，不是测试写错了
+- **主动更正自己的错误结论**：发现"150×"是内存压力抖动后，立即更正 2 份文档 + 记入 troubleshooting.md，而不是继续沿用
+- **隔离升级**：从只隔离 DB，扩展到 LSH/index/id_map 全量，并发现测试确实在写生产索引
+
+## 📝 未完成事项
+- Phase 1（记忆系统）尚未开始 — 原因：先做 P0 是用户选定的顺序
+- `storage/knowledge_base.db.pre-cleanup-20261104`（118MB 备份）未处置 — 待用户决定保留/删除
+
+## 🐛 遇到的问题
+- **生产 KB 被 pytest 打成 690 chunks** — 解决：git stash 定向提取恢复 + 新增 conftest 双防线
+- **性能结论被内存压力误导（150×）** — 解决：拆阶段复测 + 热态/多测/中位数；已更正文档与教训
+- **`.gitignore` 漏 add 导致 amend** — 解决：`git commit --amend`
+- **两个扩展测试文件从未提交** — 解决：`afc9fe2` 补提交
+
+## 📦 产出物
+- `tests/conftest.py`（双防线：路径重定向 + 多文件指纹守卫）
+- `tests/test_vector_search_perf.py`（正确性 + 性能，N=20000 < 0.35s）
+- `rag_core/vector_store_libsql.py`（向量化余弦检索）
+- `.gitignore`（storage/ 全量忽略）
+- 提交：`730c93c` / `922f137` / `6ef1727` / `afc9fe2`
+
+## ➡️ 下一步
+- Phase 1：`Chunk` 模型扩展 + `rag_core/memory_scoring.py` 纯函数 + `RAG_MEMORY_ENABLED` 开关 + `/api/memories/stats`

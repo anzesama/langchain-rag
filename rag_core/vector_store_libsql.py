@@ -95,9 +95,13 @@ class VectorStoreManager:
 
     def _cosine_similarity_query(self, query_embedding: np.ndarray, top_k: int) -> List[Tuple[dict, float]]:
         """
-        余弦相似度检索
+        余弦相似度检索（向量化实现）。
 
-        使用 Python 计算余弦相似度（libsql 不支持向量扩展）
+        旧实现逐行 `np.dot`，且**每轮循环重算** `np.linalg.norm(query_embedding)`，
+        并对**全部**行做 `json.loads`。现改为：
+        1. BLOB 拼接后一次性 `np.frombuffer` 构造矩阵
+        2. 单次矩阵乘法 `mat @ q` 计算全部相似度
+        3. `argpartition` 选 top-k，**只**解析 top-k 的 metadata
         """
         try:
             conn = sqlite3.connect(str(self.db_path))
@@ -109,36 +113,54 @@ class VectorStoreManager:
 
             conn.close()
 
-            if not all_chunks:
+            n = len(all_chunks)
+            if n == 0:
                 return []
 
-            # 计算余弦相似度
-            similarities = []
-            for chunk_id, vector_blob, metadata_json, text_content in all_chunks:
-                vector = self._blob_to_vector(vector_blob)
+            q = np.asarray(query_embedding, dtype=np.float32)
+            dim = q.shape[0]
 
-                # 计算余弦相似度
-                norm_q = np.linalg.norm(query_embedding)
-                norm_v = np.linalg.norm(vector)
-                if norm_q == 0 or norm_v == 0:
-                    similarity = 0.0
-                else:
-                    similarity = np.dot(query_embedding, vector) / (norm_q * norm_v)
+            # 一次性构造矩阵（避免逐行 np.dot 的 Python 层开销）
+            raw = b''.join(row[1] for row in all_chunks)
+            if len(raw) == n * dim * 4:
+                mat = np.frombuffer(raw, dtype=np.float32).reshape(n, dim)
+            else:
+                # 维度不一致时退化为逐行（容错）
+                mat = np.zeros((n, dim), dtype=np.float32)
+                for i, row in enumerate(all_chunks):
+                    vec = np.frombuffer(row[1], dtype=np.float32)
+                    if vec.shape[0] == dim:
+                        mat[i] = vec
 
-                similarities.append(({
-                    'chunk_id': chunk_id,
+            q_norm = float(np.linalg.norm(q))
+            norms = np.linalg.norm(mat, axis=1)
+            denom = norms * q_norm
+
+            sims = np.zeros(n, dtype=np.float32)
+            valid = denom > 0
+            if q_norm > 0:
+                sims[valid] = (mat[valid] @ q) / denom[valid]
+
+            k = min(top_k, n)
+            if k >= n:
+                order = np.argsort(-sims)
+            else:
+                order = np.argpartition(-sims, k - 1)[:k]
+                order = order[np.argsort(-sims[order])]
+
+            results: List[Tuple[dict, float]] = []
+            for i in order[:k]:
+                row = all_chunks[int(i)]
+                metadata_json = row[2]
+                results.append(({
+                    'chunk_id': row[0],
                     'metadata': json.loads(metadata_json) if metadata_json else {},
-                    'text_content': text_content
-                }, similarity))
-
-            # 按相似度降序排列
-            similarities.sort(key=lambda x: x[1], reverse=True)
-
-            # 返回 top_k 个结果
-            return similarities[:top_k]
+                    'text_content': row[3],
+                }, float(sims[int(i)])))
+            return results
 
         except Exception as e:
-            logger.error(f"余弦相似度检索失败: {e}")
+            logger.error(f"余弦相似度检索失败: {type(e).__name__}: {e}")
             return []
 
     def add_documents(self, documents: List[Document], ids: Optional[List[str]] = None) -> None:

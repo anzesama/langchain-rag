@@ -59,18 +59,22 @@
 
 ## 2. P0-2：向量检索性能（实测瓶颈）
 
-| 指标 | 当前值 |
-|------|--------|
-| 数据量 | 13198 chunks × 512 dim |
-| `/api/search_raw` 端到端 | **avg 11.2s / max 50.9s** |
-| 纯向量化 `matrix @ q` | **0.072s** |
-| 差距 | **~150×** |
+### 实测（12591 chunks × 512 dim，热态）
 
-### 根因
-`rag_core/vector_store_libsql.py:86` `_cosine_similarity_query()`：
-1. 🔴 循环内重复 `np.linalg.norm(query_embedding)`（13198 次）
+| 阶段 | 旧实现 | 修复后 |
+|------|--------|--------|
+| `SELECT` 全表 | 0.123s | 0.123s |
+| `_cosine_similarity_query` | 0.38~0.43s | **0.18~0.24s** |
+| `search()` 端到端（热） | 1.05~1.18s | **0.19~0.21s** |
+
+> ⚠️ **更正**：本文档初版曾写“avg 11.2s / max 50.9s / ~150×”——那是**冷进程 + 内存压力**下的抖动，不是算法问题。
+> 真实改善约 **5×**（主要体现在“不再对全表做 json.loads”）。详细复测见 `documents/research_vector-search.md` §2.2。
+
+### 根因（已修复）
+`rag_core/vector_store_libsql.py` `_cosine_similarity_query()`：
+1. 🔴 循环内重复 `np.linalg.norm(query_embedding)`（每行一次）
 2. 🔴 逐行 `np.dot`（Python 层调用）
-3. 🔴 对全部 13198 行做 `json.loads`
+3. 🔴 对**全部**行做 `json.loads`（这才是 `search()` 比裸扫描多出的 ~0.7s）
 
 ### 附带发现
 `HybridRetriever`（LSH+BM25+RRF+reranker）**已实现但服务端未接入**。
@@ -146,16 +150,17 @@ def update_after_retrieval(access_count, importance) -> tuple[int, float]:
 
 ---
 
-## 4. Phase 2：向量检索优化（Tier 1 快速胜利）
+## 4. Phase 2：向量检索优化（Tier 1）
 
-| # | 任务 | 预期收益 |
-|---|------|---------|
-| 1 | 向量化余弦（`matrix @ q` + 查询预归一化 + top-k 才解析 JSON） | 11s → **<0.3s** |
-| 2 | 入库时向量预归一化（检索退化为纯点积） | 再省一次除法 |
-| 3 | 确认 `_query_cache` 命中 | 重复查询免 embedding |
-| 4 | 服务端接入 `HybridRetriever`（LSH+BM25+RRF） | 术语召回提升 |
+| # | 任务 | 状态 | 收益 |
+|---|------|------|------|
+| 1 | 向量化余弦（矩阵拼接 + `mat @ q` + `argpartition` + 只解析 top-k） | ✅ 已完成 | `search()` 热态 **1.05~1.18s → 0.19~0.21s** |
+| 2 | 入库时向量预归一化（检索退化为纯点积） | 待办 | 再省一次除法 |
+| 3 | 确认 `_query_cache` 命中 | 待办 | 重复查询免 embedding |
+| 4 | 服务端接入 `HybridRetriever`（LSH+BM25+RRF） | 待办 | 术语召回提升 |
 
-> 目标：`/api/search_raw` **< 0.5s**（当前基线 2.2s 为小库时的旧数据）
+> 注：`/api/search_raw` 的剩余耗时主要在 **query embedding（冷 14~17s / 热 0.013s）** 与多路召回/融合，
+> 而非余弦扫描。若要继续压总延迟，优先看这两处。
 
 ---
 
@@ -174,7 +179,7 @@ def update_after_retrieval(access_count, importance) -> tuple[int, float]:
 |------|--------|---------|
 | V1 | 测试隔离 | `pytest` 全量跑完后 `chunks` 计数**不变** |
 | V2 | KB 完整性 | `/health` `total_documents` = 13198 |
-| V3 | 检索性能 | `/api/search_raw` P50 **< 0.5s** |
+| V3 | 检索性能 | `_cosine_similarity_query` 在 N=20000 下 **< 0.35s**（有回归测试） |
 | V4 | 记忆开关 | `RAG_MEMORY_ENABLED=0` 时行为与旧版**逐字节一致** |
 | V5 | 纯函数测试 | `memory_scoring` 单测覆盖 6 维度边界 |
 | V6 | 可观测性 | `/api/memories/stats` 返回结构正确 |

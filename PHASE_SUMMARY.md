@@ -310,3 +310,36 @@
 
 ## ➡️ 下一步
 - Finish 阶段（tag / 收尾）或继续 Phase 2 / Phase 3
+
+---
+
+# 阶段复盘：Finish（收尾）
+- 时间：2026-11-04 04:10
+- 状态：✅ 完成（分支保留 + 打 tag）
+
+## ✅ 做得好的点
+- **验证先于声明**：本轮消息内重跑 `pytest`（178 passed）+ `node --test`（25 passed）+ 生产库指纹核对，未复用旧结论
+- **V8 用直接探针证伪**：临时写探针测 `vs.db_path` / `wiki_db.db_path` 实际落点，跑完即删，而非依赖"守卫没报警"
+- **诚实的完成度**：明确报告 1 个预存失败与 3 个未跑文件，不宣称"全绿"
+- **发现新 bug 时停止扩大范围**：查 stash 时发现导入流水线多点损坏 → 不在收尾阶段夹带修复，改为立项
+
+## 📝 未完成事项
+- 🔴 **导入流水线 Step 4（关系抽取）多点损坏** — 见下，待立项
+- `stash@{0}` 未处理（内含 `get_chunks_by_source`，但因上述原因暂不提取）
+- 2 个 118MB 备份保留
+- 未跟踪杂物（`check_*.py` / `import_*.py` / `SEARCH_FIX_REPORT.md` 等）未清理
+- `tests/test_wiki_pipeline.py::test_path_config` 预存坏测试未修
+
+## 🐛 遇到的问题
+- **`get_chunks_by_source` 缺失** — 证据：`unified_importer.py:116` 调用、全仓库无 `def`
+- **`batch_extract_relations` 不存在** — 证据：模块只定义 `extract_relations_for_source` / `batch_extract_all`
+- **LLM 抽取代码被塞进 `finally:`** — 证据：`scripts/batch_extract_relations.py:194` 起，`finally:` 块内文并 `return`（会吞异常、覆盖返回值）
+
+## 📦 产出物
+- tag **`v1.6.0-brain-memory-phase1-2026-11-04`**
+- 本轮提交链：`730c93c` → `922f137` → `6ef1727` → `afc9fe2` → `5ede1ad` → `88dee09` → `a22e203` → `10424db` → `66ae7df` → `0e40f65` → `2e56fc8` → `e43f39b`
+- 验证证据：pytest 178 passed / 1 failed（预存）/ 0 errors；node 25 passed；生产库 12586 不变
+
+## ➡️ 下一步
+- **立项修复导入流水线 Step 4**（建议先 brainstorming 澄清预期行为）
+- 或进 Phase 2（向量预归一化 / `_query_cache` / 接入 `HybridRetriever`）

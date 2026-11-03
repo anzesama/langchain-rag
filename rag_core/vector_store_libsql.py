@@ -31,11 +31,21 @@ class VectorStoreManager:
     """
 
     def __init__(self, persist_dir: Optional[Path] = None):
-        self.persist_dir = persist_dir or VECTOR_STORE_PERSIST_DIR
-        self.persist_dir.mkdir(parents=True, exist_ok=True)
+        """初始化向量存储。
 
-        # libsql 数据库文件路径（统一使用 LIBSQL_DICTIONARY_PATH）
-        self.db_path = LIBSQL_DICTIONARY_PATH
+        显式传入 `persist_dir` 时，数据库落在该目录下（测试隔离用）；
+        不传时使用生产配置 `LIBSQL_DICTIONARY_PATH`。
+
+        ⚠️ 2026-11-03 事故：旧实现忽略 `persist_dir`、永远用全局
+           `LIBSQL_DICTIONARY_PATH`，导致测试的临时目录 fixture 形同虚设。
+        """
+        if persist_dir is not None:
+            self.persist_dir = Path(persist_dir)
+            self.db_path = self.persist_dir / "knowledge_base.db"
+        else:
+            self.persist_dir = VECTOR_STORE_PERSIST_DIR
+            self.db_path = LIBSQL_DICTIONARY_PATH
+        self.persist_dir.mkdir(parents=True, exist_ok=True)
 
         # 查询向量缓存（query_embedding_id -> embedding）
         self._query_cache = {}

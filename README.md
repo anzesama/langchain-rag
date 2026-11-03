@@ -169,6 +169,15 @@ python scripts/rag_cli.py view
 - **[审查总结 KB 修复](docs/review/REVIEW_SUMMARY_KB_FIX.md)** - 审查总结 KB 修复
 - **[审查总结热点系统](docs/review/REVIEW_SUMMARY_HOTSPOT_SYSTEM.md)** - 审查总结热点系统
 
+### 计划与设计文档（docs/plans/）
+- **[脑启发性记忆 RAG 设计](docs/plans/2026-11-03-brain-inspired-memory-rag-design.md)** - 三层记忆模型 + 软遗忘 + 重要性加权
+- **[脑启发性记忆 RAG 实施计划](docs/plans/2026-11-03-brain-inspired-memory-rag-plan.md)** - P0/Phase 1 任务清单 + 验收 V1–V8
+- 更多见 `docs/plans/`
+
+### 代码审查报告（docs/reviews/）
+- **[Phase 1 记忆层审查](docs/reviews/2026-11-04-phase1-memory-review.md)** - 2 Critical + 4 项误报驳回
+- **[审查汇总](docs/reviews/2026-11-03-review-summary.md)** - RAG 稳定性修复审查
+
 ---
 
 ## 🔧 核心功能

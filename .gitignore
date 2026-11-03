@@ -38,14 +38,18 @@ nul
 # Jupyter Notebook
 .ipynb_checkpoints/
 
-# Database (for import only, storage db excluded)
+# Database (runtime artifacts — never commit)
 *.db
 *.sqlite
 *.sqlite3
 *.db-journal
 
-# Storage (critical data)
-!storage/knowledge_base.db
+# Storage (全部为运行时产物：db / LSH 索引 / id_map / 计数 / 进度)
+# ⚠️ 曾因跟踪 118MB 大库，导致 git stash/checkout 静默替换生产数据（2026-11-03 事故）
+storage/
+
+# 临时脚本/文件
+_tmp_*
 
 # Logs
 *.log

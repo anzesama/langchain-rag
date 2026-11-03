@@ -245,6 +245,17 @@ async def health_check():
     }
 
 
+@app.get("/api/memories/stats")
+async def memories_stats():
+    """脑启发性记忆层统计（只读）。供观察「知识飞轮」效果。"""
+    try:
+        kb = get_kb()
+        return await run_in_threadpool(kb.vector_store.get_memories_stats)
+    except Exception as e:
+        logger.error(f"记忆统计失败: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/search")
 async def search(request: SearchRequest):
     """搜索知识库（含 LLM 生成；LLM 超时自动降级）"""

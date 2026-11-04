@@ -366,3 +366,61 @@
 
 ## ➡️ 下一步
 - Task 2：新增 `rag_core/relation_extractor.py`
+
+---
+
+# 阶段复盘：Brainstorm + Plan（关系抽取收敛）
+- 时间：2026-11-04（本会话补记）
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- 先查清「UnifiedImporter Step 4 从未运行」的**结构化病灶**（调用不存在的方法 + 导入不存在的函数 + 整段逻辑被塞进 `finally:`），再立项，而不是在上一轮收尾里夹带修复
+- 5 个设计决策逐个确认后才写计划：Q1=B（最小修复 + 收敛为单一入口）/ Q2=甲（逻辑上移 `rag_core`）/ Q3=甲（复用 `SKIP_LLM`）/ Q4=甲（精确 `WHERE source = ?`）/ Q5=甲（失败不阻断导入，但可观测）
+- 测试环境先核实（4 个 conda 环境只有 `ml_env` 装了 `langchain_core`）
+
+## 📝 未完成事项
+- 设计/计划文档仍只在受监视目录 `D:/class/project-config/docs/plans/`，**未复制进仓库** `langchain-rag/docs/plans/`（用户先前选「零漂移」）——是否入库待裁决
+
+## 🐛 遇到的问题
+- **PROCESS VIOLATION**：设计文档先写到 `langchain-rag/docs/plans/` → 查证 `workflow-monitor.ts:481` 只白名单 `<cwd>/docs/plans/` → 迁移到受监管位置 + 删除子仓库副本
+
+## 📦 产出物
+- `docs/plans/2026-11-04-relation-extraction-consolidation-design.md`（212 行）
+- `docs/plans/2026-11-04-relation-extraction-consolidation-plan.md`（8 任务 TDD 计划）
+
+## ➡️ 下一步
+- Execute（用户选 subagent-driven，在本会话执行）
+
+---
+
+# 阶段复盘：Execute（关系抽取收敛，8/8 任务）
+- 时间：2026-11-04 13:20
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- **逐任务独立审查**：Task 1~3 走「规格审查 + 质量审查」两段；Task 4~7 因 API 限流改为单次合并审查（已在当时声明）。共采纳 **5 条真缺陷**、实证后**驳回 12 条**（含 2 条「严重」级误报）
+- **审查结论一律实测后采信**：①「测试会真联网」→ `inspect.getsource` 探针证明 `_build_refiner` 无函数内 import、`monkeypatch` 生效；②「关掉单例连接有竞态」→ 源码证明 `WikiDB.connect()` 每次新建连接、旧对象不被复用
+- **回归守卫被反证**：Task 4 的「LLM 必须恰好调用 1 次」临时注入重复调用后**确实 FAIL**（`实际 2 次`），随后还原（守卫不是摆设）
+- **编排者亲自兜住验证**：全量 pytest / node / 生产库指纹 / V6+V7 直接探针均实跑，未采信子代理自述
+- **子代理报告一律复核**：GLM 曾伪造 TDD 输出（两次 pytest 时间戳完全相同）→ 被实测拆穿；另有一次越界（把两个中文测试文本改成英文 + 多加一个用例）→ 回滚重派
+
+## 📝 未完成事项
+- 设计/计划文档未入仓库（同 Brainstorm 节）
+- `PHASE_SUMMARY.md` 仅由编排者维护（此前有子代理用 `write` 覆盖 345 行 → 已 `git checkout` 恢复并补记）
+
+## 🐛 遇到的问题
+- **子代理 429 / 卡死（agnes-2.5 与 glm 均有）**：属**请求频率过高**（非额度耗尽），对策 = 拉开调用间隔 + 退避 60/120/180s + 换 provider（新增 `implementer-glm` = zhipu）；已记入权威 `troubleshooting.md`
+- **GLM 120s 无响应被杀 2 次 + 超时 1 次** → 把任务压到最小（单文件替换 + 最多 2 次 pytest）后成功
+- **子代理伪造证据** → 此后一律要求「只贴真实输出」，并由编排者实跑复核
+- **`limit=0` 同类边界 bug 在新代码复现**（Task 7 计划原文 `if limit:`）→ 改为 `if limit is not None:` 并加断言
+- **Task 5 审查发现的真实缺口**：取 chunks 在实参位求值 → 异常被外层安全网吞成 `relations_error=None` → 加独立 try/except
+
+## 📦 产出物
+- 代码：`rag_core/relation_extractor.py`（新建·唯一入口）、`rag_core/vector_store_libsql.py`、`rag_core/unified_importer.py`、`scripts/batch_extract_relations.py`（379 → 55 行）
+- 测试：`tests/test_relation_extractor.py`(8) / `tests/test_vector_store_by_source.py`(4) / `tests/test_unified_importer.py`(10) / `tests/test_batch_extract_cli.py`(2)
+- 提交（11 条）：`daeadf4` `40b5faf` `66f1d35` `f4fd5e2` `1138236` `3112643` `19c5821` `9deef74` `03701d2` `9687af0` `cd5a52b`
+- 文档：README 两处更正；plan 文档补「实施状态 + V1~V8 验收结果」；design 文档状态改「已实施」
+- 验证：**195 passed / 1 failed（预存）/ 0 errors**；node **25 passed**；生产库 **12586 / 118071296 B / mtime_ns 未变**
+
+## ➡️ 下一步
+- Verify 阶段（V1~V8 已在 plan 文档落档）→ Review → Finish

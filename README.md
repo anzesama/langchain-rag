@@ -236,6 +236,8 @@ python scripts/rag_cli.py view
 
 ### 关系抽取
 - ✅ **批量关系抽取**（CLI：`--all` / Web：一键精炼）
+- ✅ **单一入口**（`rag_core/relation_extractor.py`）：导入流水线 Step 4 与 CLI 共用同一实现，杜绝逻辑重复漂移
+- ✅ **错误可观测**：无实体 / 无 chunks / 取 chunks 失败 / LLM 异常均写入 `relations_error`，不再被静默吞掉
 - ✅ AGNES API 集成（agnes-2.0-flash 模型）
 - ✅ Web 界面关系预览和确认
 - ✅ 自动创建缺失实体
@@ -251,7 +253,7 @@ python scripts/rag_cli.py view
 - ✅ 实体/关系审核清理面板
 
 ### 数据管理
-- ✅ **批量关系抽取脚本**（`scripts/batch_extract_relations.py`）
+- ✅ **批量关系抽取脚本**（`scripts/batch_extract_relations.py`，已退化为**薄 CLI**：全部逻辑在 `rag_core/relation_extractor.py`）
 - ✅ 集成到 `import.py`（Step 2+3+4 自动抽取关系）
 - ✅ Web 批量导入关系增强（自动创建实体）
 - ✅ 实体/关系去重

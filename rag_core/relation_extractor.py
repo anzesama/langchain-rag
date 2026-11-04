@@ -155,6 +155,7 @@ def _build_refiner(domain: str) -> LLMRefiner:
 def _import_relations(wiki_db, relations: List[Dict], source_basename: str) -> int:
     """把关系写入 WikiDB（实体不存在时自动创建），返回成功条数"""
     imported = 0
+    failed = 0
     for rel in relations:
         src = (rel.get("source") or "").strip()
         tgt = (rel.get("target") or "").strip()
@@ -168,5 +169,8 @@ def _import_relations(wiki_db, relations: List[Dict], source_basename: str) -> i
             wiki_db.add_relationship(src, tgt, rel_type, source_chapter=source_basename)
             imported += 1
         except Exception as e:
+            failed += 1
             logger.warning(f"导入失败 ({src} -> {tgt}): {type(e).__name__}: {e}")
+    if failed:
+        logger.warning(f"关系导入部分失败: 成功 {imported} / 失败 {failed}（共 {imported + failed} 条有效）")
     return imported

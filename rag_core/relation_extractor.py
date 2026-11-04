@@ -23,23 +23,28 @@ DEFAULT_DOMAIN = os.getenv("DOMAIN_TYPE", "machine-learning")
 _PLACEHOLDER = "xxxxxxxx"
 
 
-def _result(source: str, **over) -> Dict:
+def _result(
+    source: str,
+    entities_count: int = 0,
+    relations_extracted: int = 0,
+    relations_imported: int = 0,
+    error: Optional[str] = None,
+    skipped: bool = False,
+) -> Dict:
     """统一的返回结构（键名沿用既有契约，不新增同义键）"""
-    base = {
+    return {
         "source": source,
-        "entities_count": 0,
-        "relations_extracted": 0,
-        "relations_imported": 0,
-        "error": None,
-        "skipped": False,
+        "entities_count": entities_count,
+        "relations_extracted": relations_extracted,
+        "relations_imported": relations_imported,
+        "error": error,
+        "skipped": skipped,
     }
-    base.update(over)
-    return base
 
 
 def _skip_llm() -> bool:
     """导入阶段跳过 LLM（导入脚本会设置 SKIP_LLM=1）"""
-    return os.environ.get("SKIP_LLM", "0") == "1"
+    return os.environ.get("SKIP_LLM", "0").strip() == "1"
 
 
 def _normalize_chunks(chunks: Optional[List]) -> List[Dict]:

@@ -174,3 +174,27 @@ def _import_relations(wiki_db, relations: List[Dict], source_basename: str) -> i
     if failed:
         logger.warning(f"关系导入部分失败: 成功 {imported} / 失败 {failed}（共 {imported + failed} 条有效）")
     return imported
+
+
+def extract_all_sources(domain: Optional[str] = None, limit: Optional[int] = None) -> Dict[str, Dict]:
+    """对所有已入库来源批量抽取关系
+
+    Args:
+        domain: 领域类型
+        limit: 限制处理的来源数量（None = 全部；0 = 一个都不处理）
+    """
+    try:
+        sources = VectorStoreManager().list_sources()
+    except Exception as e:
+        logger.error(f"列出来源失败: {type(e).__name__}: {e}")
+        return {}
+
+    if limit is not None:
+        sources = sources[:limit]
+
+    logger.info(f"找到 {len(sources)} 个来源，准备批量抽取")
+    results: Dict[str, Dict] = {}
+    for i, source in enumerate(sources, 1):
+        logger.info(f"\n进度: {i}/{len(sources)}")
+        results[source] = extract_relations_for_source(source, domain)
+    return results

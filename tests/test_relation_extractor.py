@@ -138,3 +138,28 @@ def test_normalize_chunks_accepts_document():
     out = rx._normalize_chunks([Document(page_content="doc text"), {"page_content": "dict text"}])
 
     assert [c["chunk_text"] for c in out] == ["doc text", "dict text"]
+
+
+def test_extract_all_sources_iterates_and_limits(monkeypatch):
+    """--all 走唯一入口，且 limit 生效；不直接访问 DB"""
+    import rag_core.relation_extractor as rx
+
+    class _VS:
+        def list_sources(self):
+            return ["_pytest_all_1.md", "_pytest_all_2.md", "_pytest_all_3.md"]
+
+    monkeypatch.setattr(rx, "VectorStoreManager", lambda *a, **k: _VS())
+    monkeypatch.setattr(
+        rx,
+        "extract_relations_for_source",
+        lambda source, domain=None, chunks=None: {"source": source, "skipped": True},
+    )
+
+    out = rx.extract_all_sources(limit=2)
+    assert list(out.keys()) == ["_pytest_all_1.md", "_pytest_all_2.md"]
+
+    # limit=0 必须"处理 0 个"，而不是被当作 falsy 忽略（同类边界 bug 已在本项目出现过）
+    assert rx.extract_all_sources(limit=0) == {}
+
+    out_all = rx.extract_all_sources()
+    assert len(out_all) == 3

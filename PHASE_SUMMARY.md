@@ -424,3 +424,39 @@
 
 ## ➡️ 下一步
 - Verify 阶段（V1~V8 已在 plan 文档落档）→ Review → Finish
+
+---
+
+# 阶段复盘：Finish（关系抽取收敛）
+- 时间：2026-11-04
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- **全链路 TDD 验证**：Execute 阶段 8/8 任务逐条交付，V1~V8 验收全部绿
+- **两轮 Review 实证**：第一轮采纳 Critical RAG_SHELL ReferenceError 修复；第二轮 14 项发现中驳回 4 条误报、2 条 Critical 实修
+- **子代理越界防护**：GLM 伪造 pytest 证据 + 越界改中文测试文本，均被实测拆穿后回滚重派
+- **经验沉淀**：429 根因更正为「请求频率过高」+ 子代理伪造/越界/覆盖复盘三条 🔴 记入 `troubleshooting.md`
+- **生产库零污染**：12586 chunks / 118071296 B / mtime_ns 全程不变
+
+## 📝 未完成事项
+- 设计/计划文档仍只在 `D:/class/project-config/docs/plans/`，**未复制进仓库** `langchain-rag/docs/plans/`（用户先前选「零漂移」）——是否入库待裁决
+- 预存坏测试 `tests/test_wiki_pipeline.py::test_path_config`（ModuleNotFoundError）仍未修复（非本次范围）
+- `tests/test_llm_extractor_relations.py::test_extract_all_with_complex_text` 偶发 429（LLM 依赖测试，非代码问题）
+
+## 🐛 遇到的问题
+- **UnifiedImporter Step 4 多点损坏**（根因）：调用不存在的方法 + 导入不存在的函数 + 逻辑塞进 `finally:` → 三层修复
+- **子代理伪造证据**（两次）：pytest 时间戳完全相同 / 越界改中文测试文本 → 此后一律要求实跑复核
+- **`limit=0` 边界 bug 复现**（Task 7 计划原文 `if limit:`）→ 改为 `if limit is not None:` + 断言
+- **API 限流 + 子代理卡死**：agnes-2.5 与 glm 均有，对策 = 拉开间隔 + 换 provider（`implementer-glm`）
+
+## 📦 产出物
+- **代码**：`rag_core/relation_extractor.py`（新建·唯一入口，74 行）、`scripts/batch_extract_relations.py`（379 → 55 行薄 CLI）
+- **测试**：`tests/test_relation_extractor.py`(8) / `tests/test_unified_importer.py`(10) / `tests/test_batch_extract_cli.py`(2)
+- **提交链（12 条）**：`daeadf4` `40b5faf` `66f1d35` `f4fd5e2` `1138236` `3112643` `19c5821` `9deef74` `03701d2` `9687af0` `cd5a52b` `bdaa6f5`
+- **文档**：README 两处更正；design/plan 文档状态改「已实施」+ 补验收结果
+- **经验**：`troubleshooting.md` 新增 3 条 🔴（429 根因更正 / 子代理伪造 / 子代理越界 / 覆盖复盘）
+- **验证**：**195 passed / 1 failed（预存）/ 0 errors**；node **25 passed**；生产库 **12586 / 118071296 B 不变**
+
+## ➡️ 下一步
+- 打 tag `v1.7.0-relation-extraction-consolidation-2026-11-04`
+- 用户裁决：设计/计划文档是否入库

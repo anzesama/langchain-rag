@@ -82,7 +82,7 @@ class UnifiedImporter:
         Returns:
             {'entities_added': N, 'relations_added': M}
         """
-        stats = {"entities_added": 0, "relations_added": 0}
+        stats = {"entities_added": 0, "relations_added": 0, "relations_error": None}
         if not text or not text.strip():
             return stats
 
@@ -111,26 +111,19 @@ class UnifiedImporter:
                 added_names.add(name)
                 stats['entities_added'] += 1
 
-            # Step 4: LLM 批量关系抽取（基于新导入的 chunks）
-            # 获取刚导入的 chunks
-            chunks = self.vs.get_chunks_by_source(source)
-            if chunks and len(chunks) > 0:
-                logger.info(f"  开始批量关系抽取: {len(chunks)} chunks from {source}")
-                try:
-                    from scripts.batch_extract_relations import batch_extract_relations
-                    # 传入 chunks 列表和文档路径（作为 source_chapter）
-                    relations_added = batch_extract_relations(
-                        chunks=chunks,
-                        source=source,
-                        model_name=self.extractor.model_name if hasattr(self.extractor, 'model_name') else 'agnes-2.0-flash'
-                    )
-                    stats['relations_added'] = relations_added
-                    logger.info(f"  关系抽取完成: {relations_added} 条关系")
-                except Exception as e:
-                    logger.error(f"  关系抽取失败: {e}")
+            # Step 4: LLM 批量关系抽取（唯一入口：rag_core.relation_extractor）
+            #   SKIP_LLM=1 时入口内部会直接跳过（零 LLM 调用）。
+            from rag_core.relation_extractor import extract_relations_for_source
+
+            res = extract_relations_for_source(
+                source, chunks=self.vs.get_chunks_by_source(source)
+            )
+            stats["relations_added"] = res.get("relations_imported", 0)
+            stats["relations_error"] = res.get("error")
+            if res.get("error"):
+                logger.warning(f"  关系抽取未完成: {res['error']}")
             else:
-                # 如果 chunks 为空，尝试从数据库获取
-                logger.warning(f"  警告: 无法获取 chunks，跳过关系抽取")
+                logger.info(f"  关系抽取完成: {stats['relations_added']} 条")
 
             logger.info(
                 f"  Jieba entities: {stats['entities_added']}, LLM relations: {stats['relations_added']}"

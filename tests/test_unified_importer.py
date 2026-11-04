@@ -79,5 +79,48 @@ def test_import_entities_and_relations():
         assert isinstance(stats, dict)
         assert 'entities_added' in stats
         assert 'relations_added' in stats
+        assert 'relations_error' in stats, "stats 必须暴露关系抽取错误"
     finally:
         os.environ.pop('SKIP_LLM', None)
+
+
+def test_step4_uses_single_entry_and_reports_error(monkeypatch):
+    """Step 4 必须走 rag_core.relation_extractor，且不抛 AttributeError"""
+    import rag_core.relation_extractor as rx
+    from rag_core.unified_importer import UnifiedImporter
+
+    called = []
+
+    def _fake(source, domain=None, chunks=None):
+        called.append(source)
+        return {
+            "source": source,
+            "entities_count": 0,
+            "relations_extracted": 0,
+            "relations_imported": 0,
+            "error": None,
+            "skipped": True,
+        }
+
+    monkeypatch.setenv("SKIP_LLM", "1")
+    monkeypatch.setattr(rx, "extract_relations_for_source", _fake)
+
+    stats = UnifiedImporter()._import_entities_and_relations("underfitting is common.", "_pytest_step4.md")
+
+    assert called == ["_pytest_step4.md"], "必须调用唯一入口且传入正确 source"
+    assert "relations_error" in stats, "stats 必须暴露关系抽取错误"
+    assert stats["relations_added"] == 0
+
+
+def test_step4_skipped_under_skip_llm(monkeypatch):
+    """SKIP_LLM=1 时不得构造 LLMRefiner（导入阶段零 LLM 调用）"""
+    import rag_core.relation_extractor as rx
+    from rag_core.unified_importer import UnifiedImporter
+
+    built = []
+    monkeypatch.setenv("SKIP_LLM", "1")
+    monkeypatch.setattr(rx, "LLMRefiner", lambda *a, **k: built.append(1))
+
+    UnifiedImporter()._import_entities_and_relations("underfitting is common.", "_pytest_step4_skip.md")
+
+    assert built == []

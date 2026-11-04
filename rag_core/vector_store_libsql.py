@@ -628,6 +628,65 @@ class VectorStoreManager:
             logger.error(f"获取 chunk 计数失败: {e}")
             return 0
 
+    def get_chunks_by_source(self, source: str, limit: Optional[int] = None) -> List[dict]:
+        """按 source **精确**获取 chunks（供关系抽取等下游使用）
+
+        Args:
+            source: 精确来源（对应 chunks.source 列，不做模糊匹配）
+            limit: 可选返回条数上限
+
+        Returns:
+            [{"chunk_id":…, "text_content":…, "chunk_text":…, "metadata": {...}}, …]
+        """
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            try:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                sql = "SELECT chunk_id, text_content, metadata FROM chunks WHERE source = ?"
+                params: List[Any] = [source]
+                if limit:
+                    sql += " LIMIT ?"
+                    params.append(limit)
+                cursor.execute(sql, params)
+                rows = cursor.fetchall()
+            finally:
+                conn.close()
+
+            out: List[dict] = []
+            for row in rows:
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                except (TypeError, ValueError):
+                    meta = {}
+                out.append(
+                    {
+                        "chunk_id": row["chunk_id"],
+                        "text_content": row["text_content"],
+                        "chunk_text": row["text_content"],
+                        "metadata": meta,
+                    }
+                )
+            return out
+        except Exception as e:
+            logger.error(f"按来源获取 chunks 失败: {type(e).__name__}: {e}")
+            return []
+
+    def list_sources(self) -> List[str]:
+        """列出所有已入库来源（去重、升序）"""
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            try:
+                rows = conn.execute(
+                    "SELECT DISTINCT source FROM chunks WHERE source IS NOT NULL ORDER BY source"
+                ).fetchall()
+            finally:
+                conn.close()
+            return [r[0] for r in rows if r[0]]
+        except Exception as e:
+            logger.error(f"列出来源失败: {type(e).__name__}: {e}")
+            return []
+
     def delete_by_source(self, source_filename: str) -> int:
         """按来源删除文档块
 

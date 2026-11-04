@@ -44,6 +44,7 @@ def test_get_chunks_by_source_limit():
 
     assert len(vs.get_chunks_by_source(source)) == 3
     assert len(vs.get_chunks_by_source(source, limit=2)) == 2
+    assert len(vs.get_chunks_by_source(source, limit=0)) == 0
 
 
 def test_get_chunks_by_source_no_match_returns_empty():
@@ -57,3 +58,5 @@ def test_list_sources_contains_added_source():
     _add(vs, source, "list me")
 
     assert source in vs.list_sources()
+    sources = vs.list_sources()
+    assert sources == sorted(sources)

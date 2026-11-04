@@ -645,7 +645,7 @@ class VectorStoreManager:
                 cursor = conn.cursor()
                 sql = "SELECT chunk_id, text_content, metadata FROM chunks WHERE source = ?"
                 params: List[Any] = [source]
-                if limit:
+                if limit is not None:
                     sql += " LIMIT ?"
                     params.append(limit)
                 cursor.execute(sql, params)

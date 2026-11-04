@@ -76,3 +76,65 @@ def test_fetches_chunks_from_store_when_none(monkeypatch):
     assert seen["source"] == "_pytest_rx_fetch.md"
     assert res["error"] is None
     assert res["relations_extracted"] == 0
+
+
+def test_no_entities_returns_error_not_crash(monkeypatch):
+    """回归：无实体时必须返回 error，且不得 NameError（旧代码在 chunks 赋值前 return 会崩）"""
+    import rag_core.relation_extractor as rx
+
+    monkeypatch.delenv("SKIP_LLM", raising=False)
+    res = rx.extract_relations_for_source(
+        "_pytest_rx_no_entities_xyz.md", chunks=[{"chunk_text": "text"}]
+    )
+
+    assert res["error"] == "No entities found"
+    assert res["relations_imported"] == 0
+    assert res["relations_extracted"] == 0
+
+
+def test_refiner_exception_becomes_error_field(monkeypatch):
+    """refiner 抛异常 → 转为 error 字段，不向上抛"""
+    import rag_core.relation_extractor as rx
+
+    class _Boom(_fake_refiner([])):
+        def extract_relations(self, chunks, entities):
+            raise RuntimeError("模拟 429")
+
+    monkeypatch.delenv("SKIP_LLM", raising=False)
+    monkeypatch.setattr(rx, "_load_entities", lambda source: [{"name": "甲"}])
+    monkeypatch.setattr(rx, "LLMRefiner", _Boom)
+
+    res = rx.extract_relations_for_source("_pytest_rx_boom.md", chunks=[{"chunk_text": "t"}])
+
+    assert "RuntimeError" in (res["error"] or "")
+    assert res["relations_imported"] == 0
+
+
+def test_llm_called_exactly_once(monkeypatch):
+    """回归：曾因 finally 中的重复块导致 LLM 跑两遍"""
+    import rag_core.relation_extractor as rx
+
+    calls = []
+
+    class _Counting(_fake_refiner([])):
+        def extract_relations(self, chunks, entities):
+            calls.append(1)
+            return {"relations": [{"source": "甲", "target": "乙", "type": "关联"}], "count": 1}
+
+    monkeypatch.delenv("SKIP_LLM", raising=False)
+    monkeypatch.setattr(rx, "_load_entities", lambda source: [{"name": "甲"}])
+    monkeypatch.setattr(rx, "LLMRefiner", _Counting)
+
+    rx.extract_relations_for_source("_pytest_rx_once.md", chunks=[{"chunk_text": "t"}])
+
+    assert len(calls) == 1, f"LLM 必须恰好调用 1 次，实际 {len(calls)} 次"
+
+
+def test_normalize_chunks_accepts_document():
+    """Document 与 dict 都要能接受（回归旧代码 c.get(...) 对 Document 报错）"""
+    import rag_core.relation_extractor as rx
+    from langchain_core.documents import Document
+
+    out = rx._normalize_chunks([Document(page_content="doc text"), {"page_content": "dict text"}])
+
+    assert [c["chunk_text"] for c in out] == ["doc text", "dict text"]

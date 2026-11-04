@@ -124,3 +124,21 @@ def test_step4_skipped_under_skip_llm(monkeypatch):
     UnifiedImporter()._import_entities_and_relations("underfitting is common.", "_pytest_step4_skip.md")
 
     assert built == []
+
+def test_step4_chunks_fetch_failure_is_reported(monkeypatch):
+    """取 chunks 失败必须写入 relations_error（不得被外层安全网吞成 None）"""
+    from rag_core.unified_importer import UnifiedImporter
+
+    importer = UnifiedImporter()
+
+    def _boom(source, limit=None):
+        raise RuntimeError("模拟取 chunks 失败")
+
+    monkeypatch.setenv("SKIP_LLM", "1")
+    monkeypatch.setattr(type(importer.vs), "get_chunks_by_source", _boom, raising=True)
+
+    stats = importer._import_entities_and_relations("underfitting is common.", "_pytest_step4_fetchfail.md")
+
+    assert stats["relations_error"] is not None, "取 chunks 失败必须被暴露"
+    assert "RuntimeError" in stats["relations_error"]
+    assert stats["relations_added"] == 0

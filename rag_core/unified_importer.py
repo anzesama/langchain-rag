@@ -115,15 +115,21 @@ class UnifiedImporter:
             #   SKIP_LLM=1 时入口内部会直接跳过（零 LLM 调用）。
             from rag_core.relation_extractor import extract_relations_for_source
 
-            res = extract_relations_for_source(
-                source, chunks=self.vs.get_chunks_by_source(source)
-            )
-            stats["relations_added"] = res.get("relations_imported", 0)
-            stats["relations_error"] = res.get("error")
-            if res.get("error"):
-                logger.warning(f"  关系抽取未完成: {res['error']}")
-            else:
-                logger.info(f"  关系抽取完成: {stats['relations_added']} 条")
+            try:
+                chunks = self.vs.get_chunks_by_source(source)
+            except Exception as e:
+                chunks = None
+                stats["relations_error"] = f"get_chunks_by_source: {type(e).__name__}: {e}"
+                logger.warning(f"  关系抽取取 chunks 失败: {type(e).__name__}: {e}")
+
+            if chunks is not None:
+                res = extract_relations_for_source(source, chunks=chunks)
+                stats["relations_added"] = res.get("relations_imported", 0)
+                stats["relations_error"] = res.get("error")
+                if res.get("error"):
+                    logger.warning(f"  关系抽取未完成: {res['error']}")
+                else:
+                    logger.info(f"  关系抽取完成: {stats['relations_added']} 条")
 
             logger.info(
                 f"  Jieba entities: {stats['entities_added']}, LLM relations: {stats['relations_added']}"

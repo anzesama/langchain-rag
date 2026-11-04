@@ -343,3 +343,26 @@
 ## ➡️ 下一步
 - **立项修复导入流水线 Step 4**（建议先 brainstorming 澄清预期行为）
 - 或进 Phase 2（向量预归一化 / `_query_cache` / 接入 `HybridRetriever`）
+
+---
+
+# 阶段复盘：Execute — Task 1 VectorStoreManager 补两个查询方法
+- 时间：2026-11-04
+- 状态：✅ 完成（提交 `daeadf4`）
+
+## ✅ 做得好的点
+- 严格遵循 TDD：先写失败测试（4 FAIL），再写实现，最后确认通过
+- 精确匹配使用 `=` 而非 `LIKE '%…%'`，避免了 `subdir/a.md` 误伤 `a.md` 的回归问题
+- 遵循现有代码风格：`sqlite3.connect(str(self.db_path))`、`logger.error(f"...: {type(e).__name__}: {e}")`、`conn.row_factory = sqlite3.Row`
+
+## 🐛 遇到的问题
+- ⚠️ **子代理用 `write` 覆盖了本文件**（345 行 → 21 行），已由编排者 `git checkout --` 恢复并合并其内容。
+  根因：AGENTS.md 要求"每阶段写 PHASE_SUMMARY.md"，子代理照做但用了**覆盖写**。
+  → 后续派发必须显式禁止子代理改本文件。
+
+## 📦 产出物
+- `rag_core/vector_store_libsql.py` — 新增 `get_chunks_by_source()` / `list_sources()`
+- `tests/test_vector_store_by_source.py` — 新建，4 个用例（精确匹配 / limit / 空结果 / list_sources）
+
+## ➡️ 下一步
+- Task 2：新增 `rag_core/relation_extractor.py`

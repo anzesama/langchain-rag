@@ -15,6 +15,8 @@ from typing import List, Dict, Optional, Any
 import logging
 import hashlib
 
+from rag_config import LIBSQL_DICTIONARY_PATH   # noqa: F401  （测试隔离靠 patch 本模块此名）
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,10 +57,23 @@ class WikiDB:
         self.storage_dir = project_root / "storage"
 
         # 使用统一的 libsql 数据库文件存储所有数据
+        # ⚠️ 默认路径取自 rag_config 的常量（而不是从 __file__ 推算），
+        #    这样测试才能通过 monkeypatch 该常量实现 DB 隔离 —— 否则
+        #    测试会直连生产 storage/knowledge_base.db（2026-11-03 事故同类风险）。
         if db_path is None:
-            self.db_path = str(self.storage_dir / "knowledge_base.db")
+            default_path = globals().get("LIBSQL_DICTIONARY_PATH")
+            if default_path is None:
+                default_path = self.storage_dir / "knowledge_base.db"
+            self.db_path = str(default_path)
         else:
             self.db_path = db_path
+
+        # 确保父目录存在，否则 sqlite3 报 "unable to open database file"
+        # （测试隔离到 tmp_path 时该目录尚未创建）
+        try:
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(f"创建 WikiDB 目录失败: {type(e).__name__}: {e}")
 
         self.conn = None
 
@@ -71,6 +86,16 @@ class WikiDB:
         self.conn.execute("PRAGMA foreign_keys = ON")  # 开启外键约束
         self.conn.row_factory = sqlite3.Row
         return self.conn
+
+    @staticmethod
+    def _safe_json_load(value):
+        """安全 JSON 解析 — 纯文本直接包装为 {"text": value}"""
+        if not value or not value.strip() or value.strip() in ('{}', 'null'):
+            return {}
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {"text": value.strip()}
 
     def close(self):
         """关闭数据库连接"""
@@ -339,6 +364,48 @@ class WikiDB:
             ]
         except Exception as e:
             logger.error(f"获取所有实体失败: {e}")
+            return []
+
+    def get_all_relationships(self) -> List[Dict]:
+        """
+        获取所有关系
+        
+        Returns:
+            关系列表，每个关系包含 source_name, target_name, rel_type, properties 等
+        """
+        try:
+            conn = self.connect()
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT 
+                    r.id, 
+                    e1.name as source_name,
+                    e2.name as target_name,
+                    r.rel_type,
+                    r.properties,
+                    r.source_chapter
+                FROM relationships r
+                JOIN entities e1 ON r.source_id = e1.id
+                JOIN entities e2 ON r.target_id = e2.id
+                ORDER BY r.id
+            ''')
+            rows = cursor.fetchall()
+            conn.close()
+
+            return [
+                {
+                    "id": row['id'],
+                    "source_name": row['source_name'],
+                    "target_name": row['target_name'],
+                    "rel_type": row['rel_type'],
+                    "properties": self._safe_json_load(row['properties']),
+                    "source_chapter": row['source_chapter']
+                }
+                for row in rows
+            ]
+        except Exception as e:
+            logger.error(f"获取所有关系失败: {e}")
             return []
 
     def get_entities_by_type(self, entity_type: str) -> List[Dict]:

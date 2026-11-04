@@ -15,6 +15,7 @@ Wiki 知识图谱管理 Web 界面（完整版 + 知识图谱 + LLM）
 import sys
 import sqlite3
 import json
+import re
 import shutil
 import logging
 import time
@@ -44,6 +45,7 @@ sys.path.insert(0, str(project_root))
 
 from flask import Flask, render_template_string, request, jsonify
 from rag_core.wiki_db import WikiDB, get_wiki_db
+from rag_core.llm_refiner import LLMRefiner
 from rag_config import AGNES_API_KEY, AGNES_API_BASE, BASE_DIR
 
 # 延迟导入 KnowledgeBase，避免启动时初始化
@@ -74,39 +76,107 @@ def get_db_connection():
 
 
 def ensure_db_schema():
-    """确保 entities 表有 status 字段"""
+    """确保数据库结构正确 — entities 状态字段 + settings 表"""
     conn = get_db_connection()
     try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         cursor = conn.execute("PRAGMA table_info(entities)")
         columns = [row['name'] for row in cursor.fetchall()]
         if 'status' not in columns:
             conn.execute("ALTER TABLE entities ADD COLUMN status TEXT DEFAULT 'pending'")
             conn.execute("ALTER TABLE relationships ADD COLUMN status TEXT DEFAULT 'pending'")
-            conn.commit()
-            logger.info("已添加 status 字段到 entities 和 relationships 表")
+        
+        # 插入默认 LLM 配置（不存在时）
+        defaults = {
+            'llm_endpoint': AGNES_API_BASE,
+            'llm_api_key': AGNES_API_KEY or '',
+            'llm_model': 'agnes-2.0-flash',
+            'domain_type': 'machine-learning',
+            'llm_max_tokens': '3000',
+            'llm_temperature': '0.1',
+        }
+        for key, val in defaults.items():
+            conn.execute(
+                'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)',
+                (key, val)
+            )
+        # 默认 LLM 预设配置
+        default_profiles = json.dumps([
+            {
+                "name": "AGNES Flash",
+                "endpoint": "https://apihub.agnes-ai.cn/v1",
+                "api_key": AGNES_API_KEY or "",
+                "model": "agnes-2.0-flash",
+            },
+            {
+                "name": "GLM-4 Flash",
+                "endpoint": "https://open.bigmodel.cn/api/paas/v4",
+                "api_key": "b92daae003f94dfd95f39b246161fbf0.nHGUco5",
+                "model": "glm-4.7-flash",
+            },
+            {
+                "name": "自定义",
+                "endpoint": "",
+                "api_key": "",
+                "model": "",
+            },
+        ], ensure_ascii=False)
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('llm_profiles', ?)",
+            (default_profiles,)
+        )
+        conn.commit()
+        logger.info("DB schema updated — settings 表已就绪")
+    finally:
+        conn.close()
+
+
+def get_llm_settings():
+    """从 settings 表读取 LLM 配置"""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT key, value FROM settings WHERE key LIKE 'llm_%' OR key LIKE 'domain%'"
+        ).fetchall()
+        return {row['key']: row['value'] for row in rows}
     finally:
         conn.close()
 
 
 def call_llm(prompt: str, max_tokens: int = 2000) -> str:
-    """调用 Agnes API（或 OpenAI 兼容 API）"""
-    if not AGNES_API_KEY:
-        raise ValueError("AGNES_API_KEY 未设置")
+    """调用 LLM API（通过 settings 表读取配置）"""
+    settings = get_llm_settings()
+    api_key = settings.get('llm_api_key', AGNES_API_KEY or '')
+    if not api_key:
+        raise ValueError("LLM API Key 未在设置中配置")
 
-    base_url = AGNES_API_BASE.rstrip('/') + '/v1'
+    base_url = settings.get('llm_endpoint', AGNES_API_BASE).rstrip('/')
+    model = settings.get('llm_model', 'agnes-2.0-flash')
+    temp = float(settings.get('llm_temperature', '0.1'))
+    max_tok = max(int(settings.get('llm_max_tokens', str(max_tokens))), max_tokens)
+
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {AGNES_API_KEY}"
+        "Authorization": f"Bearer {api_key}"
     }
     data = {
-        "model": "agnes-2.0-flash",
+        "model": model,
         "messages": [
             {"role": "system", "content": "你是一个专业的知识图谱审核助手，只返回 JSON 格式的结果。"},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.1,
-        "max_tokens": max_tokens
+        "temperature": temp,
+        "max_tokens": max_tok
     }
+
+    # 记录原始 prompt（用于重试）
+    messages = data["messages"]
+    content_empty_retries = 0
 
     for attempt in range(3):
         try:
@@ -117,7 +187,36 @@ def call_llm(prompt: str, max_tokens: int = 2000) -> str:
                 timeout=120
             )
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            body = resp.json()
+            msg = body["choices"][0]["message"]
+            content = msg.get("content") or ""
+
+            # GLM-4 Flash reasoning 模式: content 为空 → 只重试一次
+            if not content and msg.get("reasoning_content"):
+                if content_empty_retries < 1:
+                    content_empty_retries += 1
+                    logger.info(f"LLM attempt {attempt}: content为空，追加强制 JSON 要求")
+                    data["messages"] = messages + [
+                        {"role": "assistant", "content": "(推理中)"},
+                        {"role": "user", "content": "你的上一次回复没有 JSON 内容。请直接输出 JSON，不要任何解释。"}
+                    ]
+                    continue
+                else:
+                    # 重试仍然空 — 从 reasoning_content 提取 JSON
+                    rc = msg["reasoning_content"]
+                    logger.info(f"LLM attempt {attempt}: 二次为空，reasoning={len(rc)}字，提取 JSON")
+                    # 找到最后一个完整的 JSON 对象
+                    last_brace = rc.rfind('}')
+                    if last_brace > 0:
+                        first_brace = rc.rfind('{', 0, last_brace)
+                        if first_brace >= 0:
+                            content = rc[first_brace:last_brace+1]
+                    if not content:
+                        raise ValueError(f"LLM 连续返回空内容，reasoning={len(rc)}字")
+
+            if not content:
+                raise ValueError(f"LLM 返回空内容: {json.dumps(msg, ensure_ascii=False)[:200]}")
+            return content
         except requests.exceptions.Timeout:
             if attempt == 2:
                 raise
@@ -129,6 +228,38 @@ def call_llm(prompt: str, max_tokens: int = 2000) -> str:
     raise RuntimeError("LLM 调用失败")
 
 
+def _parse_llm_json(raw: str) -> dict:
+    """解析 LLM 返回的 JSON，处理常见的包装问题"""
+    raw = raw.strip()
+    if not raw:
+        raise ValueError("LLM 返回空内容")
+
+    # 尝试直接解析
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # 提取 ```json ... ``` 代码块
+    m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', raw, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # 提取完整 JSON 对象：找第一个 { 到最后一个 }
+    first = raw.find('{')
+    last = raw.rfind('}')
+    if first >= 0 and last > first:
+        try:
+            return json.loads(raw[first:last+1])
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"无法解析 LLM 响应: {raw[:300]}")
+
+
 # HTML 模板
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -137,7 +268,7 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Wiki 知识图谱管理系统</title>
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.3.3/dist/echarts.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', sans-serif; background: #f0f2f5; padding: 20px; }
@@ -528,8 +659,10 @@ HTML_TEMPLATE = """
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
             <button class="nav-tab active" data-panel="graph">知识图谱</button>
-            <button class="nav-tab" data-panel="llm">LLM 辅助判断</button>
+            <button class="nav-tab" data-panel="llm">LLM 精筛与提取</button>
             <button class="nav-tab" data-panel="search">知识库搜索</button>
+            <button class="nav-tab" data-panel="graph-search">图搜索</button>
+            <button class="nav-tab" data-panel="cleanup">审核清理</button>
         </div>
 
         <!-- Graph Panel -->
@@ -547,6 +680,19 @@ HTML_TEMPLATE = """
                 <div id="graph-chart"></div>
                 <div class="graph-info">
                     实体数: <span id="graph-entity-count">0</span> | 关系数: <span id="graph-relation-count">0</span>
+                    <span style="margin-left: 16px;">
+                        显示数量:
+                        <select id="graph-limit" onchange="reloadGraphData()" style="padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; margin-left: 6px;">
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                            <option value="200" selected>200</option>
+                            <option value="500">500</option>
+                            <option value="0">全部</option>
+                        </select>
+                        <label style="cursor: pointer; margin-left: 12px; color: #666;">
+                            <input type="checkbox" id="graph-connected-only" checked onchange="reloadGraphData()"> 仅已连接
+                        </label>
+                    </span>
                 </div>
                 <div id="detail-panel" class="detail-panel">
                     <h3>实体详情</h3>
@@ -569,17 +715,51 @@ HTML_TEMPLATE = """
         <!-- LLM Panel -->
         <div id="panel-llm" class="panel" style="display: none;">
             <div class="panel-header">
-                <div class="panel-title">LLM 辅助判断</div>
-                <div class="search-bar">
-                    <select id="llm-type" class="search-input" style="width: 150px;">
-                        <option value="entity">审核实体</option>
-                        <option value="relation">审核关系</option>
+                <div class="panel-title">LLM 精筛与关系提取</div>
+            </div>
+
+            <!-- 区域配置 -->
+            <div style="margin-bottom: 16px; padding: 12px; background: #f9f9f9; border-radius: 4px;">
+                <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <label style="font-weight: bold;">领域分类:</label>
+                    <select id="domain-select" onchange="updateDomain()" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px;">
+                        <option value="machine-learning" selected>ML/数据科学</option>
+                        <option value="novel">小说/剧情</option>
+                        <option value="ontology">技术概念本体</option>
                     </select>
-                    <button class="btn btn-purple" onclick="runLLMReview()">开始审核</button>
+                    <label style="font-weight: bold;">LLM 预设:</label>
+                    <select id="llm-profile-select" onchange="switchProfile()" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px;">
+                        <option value="">-- 选择模型预设 --</option>
+                    </select>
+                    <label style="font-weight: bold; margin-left: 8px;">端点:</label>
+                    <input type="text" id="llm-endpoint" placeholder="http://..." style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; width: 260px;">
+                    <label style="font-weight: bold; margin-left: 8px;">Key:</label>
+                    <input type="text" id="llm-key" placeholder="sk-..." style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; width: 200px;">
+                    <label style="font-weight: bold; margin-left: 8px;">模型:</label>
+                    <input type="text" id="llm-model" placeholder="model name" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; width: 140px;">
+                    <button class="btn btn-primary" onclick="saveLLMSettings()" style="font-size: 13px; padding: 6px 14px;">保存设置</button>
                 </div>
             </div>
-            <div id="llm-results" style="margin-top: 20px;">
-                <div class="empty-state">选择实体或关系类型，点击"开始审核"让 LLM 帮助判断</div>
+
+            <!-- 精炼状态统计 -->
+            <div id="refine-stats" style="margin-bottom: 10px; font-size: 13px; color: #666;"></div>
+
+            <!-- 来源选择 -->
+            <div style="margin-bottom: 16px; padding: 12px; background: #f9f9f9; border-radius: 4px;">
+                <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <label style="font-weight: bold;">来源文件:</label>
+                    <select id="source-select" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; flex: 1; min-width: 200px;">
+                        <option value="">-- 选择来源文件 --</option>
+                    </select>
+                    <button class="btn btn-purple" onclick="runRefineEntities()" style="padding: 8px 16px;">精筛实体</button>
+                    <button class="btn btn-primary" onclick="runExtractRelations()" style="padding: 8px 16px;">提取关系</button>
+                    <button class="btn btn-success" onclick="runRefineAndExtract()" style="padding: 8px 20px; background: linear-gradient(135deg, #11998e, #38ef7d); border: none;">一键精炼（合并）</button>
+                </div>
+            </div>
+
+            <!-- 结果区域 -->
+            <div id="llm-results">
+                <div class="empty-state">选择来源文件，执行 LLM 精筛或关系提取</div>
             </div>
         </div>
 
@@ -618,6 +798,89 @@ HTML_TEMPLATE = """
             </div>
             <div id="search-results" style="max-height: 600px; overflow-y: auto;">
                 <div class="empty-state">输入关键词开始语义搜索</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 审核清理面板 -->
+    <div class="panel" id="panel-cleanup" style="display: none;">
+        <div class="panel-header">
+            <div class="panel-title">审核清理</div>
+            <div style="display: flex; gap: 10px;">
+                <button class="btn btn-secondary" onclick="selectAllClean()" id="btn-select-all-clean" style="font-size: 13px;">全选当前</button>
+                <button class="btn btn-secondary" onclick="deselectAllClean()" id="btn-deselect-all" style="font-size: 13px;">取消全选</button>
+                <button class="btn btn-danger" onclick="batchDeleteCleanup()" id="btn-batch-delete" disabled>批量删除所选</button>
+            </div>
+        </div>
+
+        <!-- 过滤条件 -->
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; align-items: center;">
+            <label>名称长度:</label>
+            <select id="filter-len" onchange="renderCleanupList()" style="padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px;">
+                <option value="all">全部</option>
+                <option value="short">短 (≤3字)</option>
+                <option value="mid">中 (4-80字)</option>
+                <option value="long">长 (>80字)</option>
+            </select>
+
+            <label>关系状态:</label>
+            <select id="filter-rel" onchange="renderCleanupList()" style="padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px;">
+                <option value="all">全部</option>
+                <option value="connected">有连接关系</option>
+                <option value="isolated">无连接关系</option>
+            </select>
+
+            <label>类型:</label>
+            <select id="filter-type" onchange="renderCleanupList()" style="padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px;">
+                <option value="all">全部</option>
+            </select>
+
+            <span id="cleanup-stats" style="margin-left: auto; color: #666; font-size: 13px;"></span>
+        </div>
+
+        <!-- 实体列表 -->
+        <div style="max-height: 650px; overflow-y: auto; border: 1px solid #eee; border-radius: 4px;">
+            <table style="width: 100%; border-collapse: collapse;" id="cleanup-table">
+                <thead>
+                    <tr style="background: #fafafa; position: sticky; top: 0; z-index: 1;">
+                        <th style="padding: 8px; width: 40px;"><input type="checkbox" id="select-all" onchange="toggleAllClean(this)"></th>
+                        <th style="padding: 8px; text-align: left;">实体名</th>
+                        <th style="padding: 8px; width: 80px;">类型</th>
+                        <th style="padding: 8px; width: 60px;">长度</th>
+                        <th style="padding: 8px; width: 60px;">关系</th>
+                        <th style="padding: 8px; width: 120px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="cleanup-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 图搜索面板 -->
+    <div class="panel" id="panel-graph-search" style="display: none;">
+        <div class="panel-header">
+            <div class="panel-title">&#x1f50d; 图搜索</div>
+            <div style="display: flex; gap: 8px; flex: 1;">
+                <input type="text" id="gs-input" placeholder="输入关键词搜索知识图谱..." 
+                       style="flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px;"
+                       onkeydown="if(event.key==='Enter') graphSearch()">
+                <button class="btn btn-primary" onclick="graphSearch()">搜索</button>
+                <button class="btn btn-secondary" onclick="clearGraphSearch()">清空</button>
+            </div>
+        </div>
+
+        <div style="display: flex; gap: 16px;">
+            <div style="flex: 1; min-width: 0;">
+                <div id="graph-search-chart" style="height: 500px; border: 1px solid #eee; border-radius: 4px;"></div>
+                <div style="margin-top: 8px; padding: 8px; background: #f5f5f5; border-radius: 4px; font-size: 12px; color: #333;">
+                    <span id="gs-stats">未搜索</span>
+                    <span style="float: right; color: #999;">点击节点展开更多关联</span>
+                </div>
+            </div>
+
+            <div style="width: 350px; border: 1px solid #eee; border-radius: 4px; padding: 12px; overflow-y: auto; max-height: 570px;">
+                <div style="font-weight: bold; margin-bottom: 8px;">关联事实</div>
+                <div id="gs-fact-list" style="font-size: 13px; color: #666;">-- 输入关键词回车搜索 --</div>
             </div>
         </div>
     </div>
@@ -729,12 +992,16 @@ HTML_TEMPLATE = """
         let editingEntityId = null;
         let editingRelationId = null;
         let graphChart = null;
+        let cleanupEntities = [];
+        let cleanupSelected = new Set();
         let selectedEntity = null;
         let connectingSource = null;
         let connectingSourceName = null;
 
         // ========== 面板切换 ==========
         function showPanel(panelName, evt) {
+            // 切换面板时关闭详情面板
+            closeDetailPanel();
             console.log('[showPanel]', panelName);
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
             let activeTab = evt ? evt.currentTarget : document.querySelector(`.nav-tab[data-panel="${panelName}"]`);
@@ -751,7 +1018,21 @@ HTML_TEMPLATE = """
 
             // 仅在图表面板加载图谱
             if (panelName === 'graph') {
-                loadGraph();
+                Promise.all([loadEntities(), loadRelations()]).then(function() {
+                    loadGraph();
+                });
+            }
+            if (panelName === 'llm') {
+                loadLLMSettings();
+                loadSources();
+            }
+            if (panelName === 'cleanup') {
+                loadCleanupData();
+            }
+            if (panelName === 'graph-search') {
+                setTimeout(function() {
+                    if (gsChart) gsChart.resize();
+                }, 100);
             }
         }
 
@@ -770,10 +1051,17 @@ HTML_TEMPLATE = """
                 if (e.key === 'Enter') searchKnowledge();
             });
 
+            // 清理面板事件代理（删除按钮）
+            document.addEventListener('click', function(e) {
+                var btn = e.target.closest('.btn-cleanup-delete');
+                if (btn) {
+                    var eid = btn.getAttribute('data-eid');
+                    if (eid) deleteOneEntity(eid);
+                }
+            });
+
             // 加载数据
             loadStats();
-            loadEntities();
-            loadRelations();
             // 等待 entities 和 relations 加载完成后渲染图谱
             Promise.all([loadEntities(), loadRelations()]).then(function() {
                 loadGraph();
@@ -808,10 +1096,31 @@ HTML_TEMPLATE = """
             }
         }
 
+        // 重新加载图谱数据（数量/复选框变化时触发）
+        async function reloadGraphData() {
+            await Promise.all([loadEntities(), loadRelations()]);
+            loadGraph();
+        }
+
         // 加载实体列表
         async function loadEntities() {
             try {
-                const res = await fetch('/api/entities');
+                let url = '/api/entities';
+                // 从图表面板读取参数
+                const connectedChk = document.getElementById('graph-connected-only');
+                const limitSel = document.getElementById('graph-limit');
+                if (connectedChk && connectedChk.checked) {
+                    url += '?connected_only=true';
+                } else {
+                    url += '?connected_only=false';
+                }
+                if (limitSel) {
+                    let limitVal = parseInt(limitSel.value);
+                    url += '&limit=' + (limitVal > 0 ? limitVal : 10000);
+                } else {
+                    url += '&limit=500';
+                }
+                const res = await fetch(url);
                 const data = await res.json();
 
                 entities = data.entities;
@@ -990,7 +1299,12 @@ HTML_TEMPLATE = """
         // 加载关系列表
         async function loadRelations() {
             try {
-                const res = await fetch('/api/relations');
+                let url = '/api/relations';
+                const limitSel = document.getElementById('graph-limit');
+                let limitVal = parseInt(limitSel ? limitSel.value : 500);
+                let limit = limitVal > 0 ? limitVal : 10000;
+                url += '?limit=' + limit;
+                const res = await fetch(url);
                 const data = await res.json();
 
                 relations = data.relations;
@@ -1003,6 +1317,198 @@ HTML_TEMPLATE = """
 
         // 渲染关系表格（已移至图谱面板）
         function renderRelationTable() { /* moved to graph */ }
+
+        // ========== 审核清理面板 ==========
+        async function loadCleanupData() {
+            try {
+                // 强制加载全量数据（图表面板可能只加载了部分）
+                const entResp = await fetch('/api/entities?connected_only=false&limit=10000');
+                const entData = await entResp.json();
+                const allEntities = entData.entities;
+
+                const relResp = await fetch('/api/relations?limit=10000');
+                const relData = await relResp.json();
+                const allRelations = relData.relations;
+
+                // 同步全局变量
+                entities = allEntities;
+                relations = allRelations;
+
+                // 计算每个实体的关系数
+                const relCountMap = {};
+                allRelations.forEach(r => {
+                    if (r.source_name) { relCountMap[r.source_name] = (relCountMap[r.source_name] || 0) + 1; }
+                    if (r.target_name) { relCountMap[r.target_name] = (relCountMap[r.target_name] || 0) + 1; }
+                });
+
+                cleanupEntities = allEntities.map(e => ({
+                    ...e,
+                    _relCount: relCountMap[e.name] || 0
+                }));
+                cleanupSelected.clear();
+
+                console.log('[cleanup] 已加载实体:', cleanupEntities.length, '关系:', allRelations.length);
+                console.log('[cleanup] 实体示例:', cleanupEntities.slice(0, 3));
+
+                // 填充类型过滤下拉
+                const types = [...new Set(cleanupEntities.map(e => e.type || '未分类'))];
+                const typeSel = document.getElementById('filter-type');
+                typeSel.innerHTML = '<option value="all">全部</option>' +
+                    types.map(t => '<option value="' + t + '">' + t + '</option>').join('');
+
+                renderCleanupList();
+            } catch(e) {
+                console.error('加载清洗数据失败:', e);
+                document.getElementById('cleanup-tbody').innerHTML = '<tr><td colspan="6" style="padding: 20px; text-align: center; color: red;">加载失败: ' + e.message + '</td></tr>';
+            }
+        }
+
+        function renderCleanupList() {
+            if (!cleanupEntities || cleanupEntities.length === 0) return;
+
+            const lenFilter = document.getElementById('filter-len').value;
+            const relFilter = document.getElementById('filter-rel').value;
+            const typeFilter = document.getElementById('filter-type').value;
+
+            let filtered = cleanupEntities.filter(e => {
+                // 名称长度过滤
+                const nlen = (e.name || '').length;
+                if (lenFilter === 'short' && nlen > 3) return false;
+                if (lenFilter === 'mid' && (nlen <= 3 || nlen > 80)) return false;
+                if (lenFilter === 'long' && nlen <= 80) return false;
+                // 关系过滤
+                if (relFilter === 'connected' && e._relCount === 0) return false;
+                if (relFilter === 'isolated' && e._relCount > 0) return false;
+                // 类型过滤
+                if (typeFilter !== 'all' && (e.type || '未分类') !== typeFilter) return false;
+                return true;
+            });
+
+            document.getElementById('cleanup-stats').textContent =
+                '匹配 ' + filtered.length + ' / ' + cleanupEntities.length + ' 个实体';
+
+            let html = '';
+            filtered.forEach(e => {
+                const checked = cleanupSelected.has(e.id) ? 'checked' : '';
+                let nameDisp = e.name || '（空）';
+                if (nameDisp.length > 60) nameDisp = nameDisp.substring(0, 60) + '...';
+                html += '<tr style="border-bottom: 1px solid #eee;">';
+                html += '<td style="padding: 4px; text-align: center;"><input type="checkbox" value="' + e.id + '" ' + checked + ' onchange="toggleCleanup(this)"></td>';
+                html += '<td style="padding: 4px;" title="' + (e.name || '').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '">' + nameDisp + '</td>';
+                html += '<td style="padding: 4px; text-align: center; font-size: 12px;">' + (e.type || '未分类') + '</td>';
+                html += '<td style="padding: 4px; text-align: center;">' + (e.name || '').length + '</td>';
+                html += '<td style="padding: 4px; text-align: center;">' + e._relCount + '</td>';
+                html += '<td style="padding: 4px; text-align: center;"><button class="btn btn-sm btn-danger btn-cleanup-delete" data-eid="' + e.id + '" style="padding: 2px 8px; font-size: 12px; background: #ff4d4f; color: #fff; border: none; border-radius: 3px; cursor: pointer;">删除</button></td>';
+                html += '</tr>';
+            });
+            document.getElementById('cleanup-tbody').innerHTML = html;
+
+            // 更新全选复选框状态
+            document.getElementById('select-all').checked =
+                filtered.length > 0 && filtered.every(e => cleanupSelected.has(e.id));
+            document.getElementById('btn-batch-delete').disabled = cleanupSelected.size === 0;
+            document.getElementById('btn-batch-delete').textContent = '批量删除所选 (' + cleanupSelected.size + ')';
+        }
+
+        function toggleCleanup(checkbox) {
+            if (checkbox.checked) cleanupSelected.add(checkbox.value);
+            else cleanupSelected.delete(checkbox.value);
+            renderCleanupList();
+        }
+
+        function toggleAllClean(master) {
+            const lenFilter = document.getElementById('filter-len').value;
+            const relFilter = document.getElementById('filter-rel').value;
+            const typeFilter = document.getElementById('filter-type').value;
+
+            const visibleIds = cleanupEntities.filter(e => {
+                const nlen = (e.name || '').length;
+                if (lenFilter === 'short' && nlen > 3) return false;
+                if (lenFilter === 'mid' && (nlen <= 3 || nlen > 80)) return false;
+                if (lenFilter === 'long' && nlen <= 80) return false;
+                if (relFilter === 'connected' && e._relCount === 0) return false;
+                if (relFilter === 'isolated' && e._relCount > 0) return false;
+                if (typeFilter !== 'all' && (e.type || '未分类') !== typeFilter) return false;
+                return true;
+            }).map(e => e.id);
+
+            if (main.checked) {
+                visibleIds.forEach(id => cleanupSelected.add(id));
+            } else {
+                visibleIds.forEach(id => cleanupSelected.delete(id));
+            }
+            renderCleanupList();
+        }
+
+        function selectAllClean() {
+            const lenFilter = document.getElementById('filter-len').value;
+            const relFilter = document.getElementById('filter-rel').value;
+            const typeFilter = document.getElementById('filter-type').value;
+            const visibleIds = cleanupEntities.filter(e => {
+                const nlen = (e.name || '').length;
+                if (lenFilter === 'short' && nlen > 3) return false;
+                if (lenFilter === 'mid' && (nlen <= 3 || nlen > 80)) return false;
+                if (lenFilter === 'long' && nlen <= 80) return false;
+                if (relFilter === 'connected' && e._relCount === 0) return false;
+                if (relFilter === 'isolated' && e._relCount > 0) return false;
+                if (typeFilter !== 'all' && (e.type || '未分类') !== typeFilter) return false;
+                return true;
+            }).map(e => e.id);
+            visibleIds.forEach(id => cleanupSelected.add(id));
+            renderCleanupList();
+        }
+
+        function deselectAllClean() {
+            cleanupSelected.clear();
+            renderCleanupList();
+        }
+
+        async function deleteOneEntity(eid) {
+            if (!confirm('确认删除此实体及其所有关联关系？')) return;
+            try {
+                const resp = await fetch('/api/entities/batch-delete', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ids: [eid]})
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    showToast('已删除', 'success');
+                    cleanupSelected.delete(eid);
+                    await Promise.all([loadEntities(), loadRelations()]);
+                    loadCleanupData();
+                } else {
+                    showToast('删除失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch(e) {
+                showToast('删除失败: ' + e.message, 'error');
+            }
+        }
+
+        async function batchDeleteCleanup() {
+            if (cleanupSelected.size === 0) return;
+            if (!confirm('确认删除 ' + cleanupSelected.size + ' 个实体及其所有关联关系吗？此操作不可恢复！')) return;
+            try {
+                const ids = Array.from(cleanupSelected);
+                const resp = await fetch('/api/entities/batch-delete', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ids: ids})
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    showToast('已删除 ' + data.deleted + ' 个实体', 'success');
+                    cleanupSelected.clear();
+                    await Promise.all([loadEntities(), loadRelations()]);
+                    loadCleanupData();
+                } else {
+                    showToast('删除失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch(e) {
+                showToast('删除失败: ' + e.message, 'error');
+            }
+        }
+        // ========== 审核清理面板结束 ==========
 
         // 关系模态框操作
         function openAddRelationModal() {
@@ -1198,6 +1704,12 @@ if (data.relations.length === 0) {
             });
         }
 
+        function closeDetailPanel() {
+            document.getElementById('detail-panel').style.display = 'none';
+            document.getElementById('detail-empty').style.display = 'block';
+            selectedEntity = null;
+        }
+
         async function deleteRelationById(relId) {
             if (!confirm('确定删除此关系？')) return;
             try {
@@ -1230,8 +1742,7 @@ if (data.relations.length === 0) {
             connectingSource = null;
             connectingSourceName = null;
             document.getElementById('connecting-hint').style.display = 'none';
-            graphChart.dispatchAction({ type: 'unselect', seriesIndex: 0 });
-            graphChart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+            // ECharts 已替换为 Canvas，无需 dispatchAction
         }
 
         function startConnectingFromEntity(entityObj) {
@@ -1288,9 +1799,7 @@ if (data.relations.length === 0) {
                 var data = await res.json();
                 if (data.success) {
                     showToast('实体已删除', 'success');
-                    selectedEntity = null;
-                    document.getElementById('detail-panel').style.display = 'none';
-                    document.getElementById('detail-empty').style.display = 'block';
+                    closeDetailPanel();  // 关闭详情面板
                     await loadEntities();
                     await loadRelations();
                     loadGraph();
@@ -1402,323 +1911,770 @@ if (data.relations.length === 0) {
 
         // End 知识库搜索
 
-        // 知识图谱可视化
-        function loadGraph() {
-            console.log('[graph] loadGraph called, entities=', entities.length, ' relations=', relations.length);
-            const container = document.getElementById('graph-chart');
-            if (!container) { console.error('[graph] container #graph-chart not found'); return; }
+        // ================== 图搜索 ==================
+        let gsChart = null;
+        let gsNodes = [];
+        let gsEdges = [];
+        let gsFactList = [];
 
-            if (graphChart) {
-                graphChart.dispose();
+        async function graphSearch() {
+            var query = document.getElementById('gs-input').value.trim();
+            if (!query) return;
+
+            document.getElementById('gs-stats').textContent = '搜索中...';
+            document.getElementById('gs-fact-list').innerHTML = '<div style="color: #999;">加载中...</div>';
+
+            try {
+                var resp = await fetch('/api/graph', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({query: query, top_k: 10})
+                });
+                var data = await resp.json();
+                if (!data.success) {
+                    document.getElementById('gs-stats').textContent = '搜索失败: ' + (data.error || '未知错误');
+                    return;
+                }
+
+                gsNodes = data.nodes || [];
+                gsEdges = data.edges || [];
+                gsFactList = data.fact_list || [];
+
+                var seedCount = gsNodes.filter(function(n){return n.is_seed}).length;
+                document.getElementById('gs-stats').textContent =
+                    '节点 ' + gsNodes.length + ' | 关系 ' + gsEdges.length + ' | 种子 ' + seedCount;
+
+                renderGraphSearch();
+                renderFactList();
+            } catch(e) {
+                document.getElementById('gs-stats').textContent = '请求失败: ' + e.message;
             }
+        }
 
-            // 准备数据
-            const typeSet = [...new Set(entities.map(e => e.type || '未分类'))];
-            const typeMap = {};
-            typeSet.forEach((t, i) => { typeMap[t] = i; });
+        function renderGraphSearch() {
+            var container = document.getElementById('graph-search-chart');
+            if (!container || gsNodes.length === 0) return;
 
-            const nodes = entities.map(e => ({
-                id: e.name || 'unknown',
-                name: e.name || '未知',
-                category: typeMap[e.type || '未分类'] || 0,
-                symbolSize: Math.max(30, Math.min(80, 25 + (e.name || '').length * 6)),
-                itemStyle: {
-                    color: 'hsl(' + ((typeMap[e.type || '未分类'] || 0) * 137.508 % 360) + ', 70%, 60%)'
-                },
-                _raw: e
-            }));
+            if (gsChart) { gsChart.dispose(); gsChart = null; }
 
-            const links = relations.map(r => ({
-                source: r.source_name || 'unknown',
-                target: r.target_name || 'unknown',
-                name: r.rel_type,
-                lineStyle: { width: 2, curveness: 0.3 }
-            }));
+            // 类型分类
+            var types = [];
+            var typeIdx = {};
+            gsNodes.forEach(function(n) {
+                var t = n.type || '未知';
+                if (typeIdx[t] === undefined) {
+                    typeIdx[t] = types.length;
+                    types.push(t);
+                }
+            });
 
-            console.log('[graph] nodes:', nodes.length, 'links:', links.length);
-            console.log('[graph] container size:', container.offsetWidth, 'x', container.offsetHeight);
-
-            // 延迟初始化——等待面板 display:block 后浏览器 reflow
-            setTimeout(function() {
-                console.log('[graph] container size after timeout:', container.offsetWidth, 'x', container.offsetHeight);
-                graphChart = echarts.init(container);
-
-                const option = {
-                    title: {
-                        text: 'Wiki 知识图谱',
-                        left: 'center'
+            var nodes = gsNodes.map(function(n) {
+                return {
+                    id: n.name,
+                    name: n.name.length > 30 ? n.name.substring(0, 30) + '...' : n.name,
+                    category: typeIdx[n.type || '未知'] || 0,
+                    symbolSize: n.is_seed ? 45 : 30,
+                    itemStyle: {
+                        color: n.is_seed ? '#e53935' : 'hsl(' + ((typeIdx[n.type || '未知'] || 0) * 137.508 % 360) + ', 50%, 60%)'
                     },
+                    _raw: n
+                };
+            });
+
+            var links = gsEdges.map(function(e) {
+                return {
+                    source: e.source,
+                    target: e.target,
+                    name: e.rel_type || '关联',
+                    lineStyle: { width: 2, curveness: 0.3 }
+                };
+            });
+
+            setTimeout(function() {
+                if (!container.offsetWidth) {
+                    console.log('[gs] container zero width, retrying...');
+                    setTimeout(function() { gsChart = echarts.init(container); gsChart.setOption(option); }, 200);
+                    return;
+                }
+                gsChart = echarts.init(container);
+
+                var option = {
                     tooltip: {
-                        formatter: function(params) {
-                            if (params.dataType === 'node') {
-                                const e = params.data._raw;
-                                var html = '<strong>' + escapeHtml(e.name || '未知') + '</strong><br/>';
-                                html += '类型: ' + escapeHtml(e.type || '未分类') + '<br/>';
-                                if (e.properties) {
-                                    try {
-                                        var props = typeof e.properties === 'string' ? JSON.parse(e.properties) : e.properties;
-                                        if (props && typeof props === 'object') {
-                                            Object.keys(props).forEach(function(k) {
-                                                html += escapeHtml(k) + ': ' + escapeHtml(String(props[k])) + '<br/>';
-                                            });
-                                        } else {
-                                            html += '属性: ' + escapeHtml(String(e.properties)) + '<br/>';
-                                        }
-                                    } catch (err) {
-                                        html += '属性: ' + escapeHtml(String(e.properties)) + '<br/>';
-                                    }
-                                }
-                                return html;
-                            } else {
-                                return escapeHtml(params.data.source || '未知') + ' - ' + escapeHtml(params.data.name || '未知') + ' - ' + escapeHtml(params.data.target || '未知');
-                            }
+                        formatter: function(p) {
+                            if (p.dataType === 'node' && p.data._raw) return '<strong>' + escapeHtml(p.data._raw.name) + '</strong>';
+                            return escapeHtml(p.data.source) + ' → ' + escapeHtml(p.data.target);
                         }
                     },
-                    legend: [{
-                        data: typeSet,
-                        orient: 'horizontal',
-                        top: 30
-                    }],
+                    legend: [{ data: types, orient: 'horizontal', top: 10, left: 'center' }],
                     series: [{
                         type: 'graph',
                         layout: 'force',
                         data: nodes,
                         links: links,
-                        categories: typeSet.map(function(t){ return { name: t }; }),
+                        categories: types.map(function(t){return {name: t};}),
                         roam: true,
-                        label: { show: true, position: 'right' },
-                        force: {
-                            repulsion: 300,
-                            edgeLength: 120
-                        },
-                        lineStyle: {
-                            color: 'source',
-                            curveness: 0.3
-                        },
-                        emphasis: {
-                            focus: 'adjacency',
-                            lineStyle: { width: 4 }
-                        }
+                        label: { show: true, position: 'right', fontSize: 11 },
+                        force: { repulsion: 300, edgeLength: [80, 200] },
+                        lineStyle: { color: '#999', width: 1.5, curveness: 0.3 },
+                        emphasis: { focus: 'adjacency', lineStyle: { width: 4 } }
                     }]
                 };
 
-                graphChart.setOption(option);
-                console.log('[graph] setOption done');
-
-                graphChart.off('click');
-                graphChart.on('click', function(params) {
+                gsChart.setOption(option);
+                gsChart.off('click');
+                gsChart.on('click', function(params) {
                     if (params.dataType === 'node' && params.data._raw) {
-                        if (connectingSource !== null) {
-                            if (params.data._raw.id === connectingSource) {
-                                showToast('不能连接自身', 'error');
-                                return;
-                            }
-                            completeConnection(params.data._raw);
-                        } else {
-                            showEntityDetail(params.data._raw);
-                        }
+                        expandNode(params.data._raw.name);
                     }
                 });
+            }, 50);
+        }
 
-                document.getElementById('graph-entity-count').textContent = entities.length;
-                document.getElementById('graph-relation-count').textContent = relations.length;
-            }, 100);
+        async function expandNode(nodeName) {
+            try {
+                var resp = await fetch('/api/graph', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({query: nodeName, top_k: 5})
+                });
+                var data = await resp.json();
+                if (!data.success || !data.nodes) {
+                    showToast('该实体无更多关联', 'info');
+                    return;
+                }
+
+                var existNames = {};
+                gsNodes.forEach(function(n) { existNames[n.name] = true; });
+
+                var addedNodes = 0;
+                data.nodes.forEach(function(n) {
+                    if (!existNames[n.name]) {
+                        gsNodes.push(n);
+                        existNames[n.name] = true;
+                        addedNodes++;
+                    }
+                });
+                data.edges.forEach(function(e) {
+                    gsEdges.push(e);
+                });
+                data.fact_list.forEach(function(f) {
+                    if (gsFactList.indexOf(f) === -1) gsFactList.push(f);
+                });
+
+                document.getElementById('gs-stats').textContent =
+                    '节点 ' + gsNodes.length + ' | 关系 ' + gsEdges.length + ' | +' + addedNodes + ' 新节点';
+                renderGraphSearch();
+                renderFactList();
+            } catch(e) {
+                showToast('展开失败: ' + e.message, 'error');
+            }
+        }
+
+        function renderFactList() {
+            var el = document.getElementById('gs-fact-list');
+            if (gsFactList.length === 0) {
+                el.innerHTML = '<div style="color: #999; padding: 10px;">无关联事实</div>';
+                return;
+            }
+            var html = '';
+            gsFactList.forEach(function(f) {
+                html += '<div style="padding: 4px 0; border-bottom: 1px solid #eee;">' +
+                        '<span style="color: #333;">' + escapeHtml(f) + '</span></div>';
+            });
+            el.innerHTML = html;
+        }
+
+        function clearGraphSearch() {
+            document.getElementById('gs-input').value = '';
+            gsNodes = [];
+            gsEdges = [];
+            gsFactList = [];
+            if (gsChart) { gsChart.dispose(); gsChart = null; }
+            var c = document.getElementById('graph-search-chart');
+            if (c) c.innerHTML = '';
+            document.getElementById('gs-stats').textContent = '已清空';
+            document.getElementById('gs-fact-list').innerHTML = '-- 请输入关键词搜索 --';
+        }
+        // ================== 图搜索结束 ==================
+
+        // ========== Canvas 力导向图谱 ==========
+        var graphCanvas = null, graphCtx = null;
+        var graphPositions = [];  // [{x, y, vx, vy, name, color, size, raw}]
+        var graphEdges = [];      // [{srcIdx, tgtIdx, name}]
+        var graphAnimId = null;
+        var graphHoveredIdx = -1;
+
+        async function loadGraph() {
+            const container = document.getElementById('graph-chart');
+            console.log('loadGraph: container found =', !!container);
+            if (!container) { console.error('Container not found!'); return; }
+
+            if (graphAnimId) { cancelAnimationFrame(graphAnimId); graphAnimId = null; }
+            if (graphCanvas) { graphCanvas.remove(); graphCanvas = null; graphCtx = null; }
+            container.innerHTML = '';
+
+            console.log('loadGraph START: entities.length=', entities.length, 'relations.length=', relations.length);
+
+            // 数据准备
+            const connectedChk = document.getElementById('graph-connected-only');
+            const entityNameSet = new Set(entities.map(e => e.name));
+            console.log('entityNameSet size:', entityNameSet.size);
+            const validRels = relations.filter(r => r.source_name && entityNameSet.has(r.source_name) && r.target_name && entityNameSet.has(r.target_name));
+            const linkedNames = new Set(); validRels.forEach(r => { linkedNames.add(r.source_name); linkedNames.add(r.target_name); });
+
+            // 根据复选框决定显示哪些实体
+            const showConnected = connectedChk && connectedChk.checked;
+            let filtered = entities;
+            if (showConnected) {
+                filtered = entities.filter(e => linkedNames.has(e.name));
+            }
+
+            console.log('loadGraph: validRels=', validRels.length, 'linkedNames=', linkedNames.size, 'filtered=', filtered.length);
+
+            const W = container.offsetWidth || 728, H = container.offsetHeight || 600;
+            console.log('Canvas size:', W, 'x', H);
+
+            if (filtered.length === 0) {
+                container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:'+H+'px;color:#999;font-size:16px;">暂无已连接的节点<br><small>请先导入关系或取消勾选「仅已连接」</small></div>';
+                return;
+            }
+
+            // 边索引（先构建，供后续 degree 计算使用）
+            var nameIdx = {};
+            filtered.forEach((e, i) => nameIdx[e.name] = i);
+            graphEdges = [];
+            validRels.forEach(r => {
+                var si = nameIdx[r.source_name], ti = nameIdx[r.target_name];
+                if (si !== undefined && ti !== undefined && si !== ti) graphEdges.push({srcIdx: si, tgtIdx: ti, name: r.rel_type});
+            });
+
+            // 计算节点连接数（度）
+            var degree = new Array(filtered.length).fill(0);
+            graphEdges.forEach(e => {
+                degree[e.srcIdx]++;
+                degree[e.tgtIdx]++;
+            });
+
+            console.log('Created', filtered.length, 'nodes and', graphEdges.length, 'edges');
+
+            // 创建 Canvas
+            graphCanvas = document.createElement('canvas');
+            graphCanvas.width = W; graphCanvas.height = H;
+            graphCanvas.style.width = W + 'px'; graphCanvas.style.height = H + 'px';
+            graphCanvas.style.cursor = 'grab';
+            container.appendChild(graphCanvas);
+            graphCtx = graphCanvas.getContext('2d');
+            console.log('Canvas created, context:', !!graphCtx);
+
+            // 创建节点位置
+            graphPositions = filtered.map(function(e, i) {
+                var d = degree[i];
+                var spread = Math.max(100, 250 - d * 15);
+                return {
+                    x: W/2 + (Math.random()-0.5)*spread,
+                    y: H/2 + (Math.random()-0.5)*spread,
+                    vx: 0, vy: 0,
+                    name: e.name,
+                    size: Math.max(20, Math.min(60, 25 + d * 8)),
+                    color: 'hsl(' + ((i * 137.508) % 360) + ', 60%, 55%)',
+                    raw: e,
+                    degree: d
+                };
+            });
+            console.log('Created', graphPositions.length, 'nodes');
+
+            // 力导布局
+            var iter = 0;
+            function step() {
+                var k = 0.08, damp = 0.9, centerX = W/2, centerY = H/2;
+                for (var i = 0; i < graphPositions.length; i++) {
+                    var pi = graphPositions[i];
+                    pi.vx += (centerX - pi.x) * 0.0005;
+                    pi.vy += (centerY - pi.y) * 0.0005;
+                    // 排斥
+                    for (var j = i+1; j < graphPositions.length; j++) {
+                        var pj = graphPositions[j];
+                        var dx = pi.x - pj.x, dy = pi.y - pj.y;
+                        var dist = Math.max(Math.sqrt(dx*dx+dy*dy), 1);
+                        var force = 400 / (dist*dist);
+                        pi.vx += dx/dist * force;
+                        pi.vy += dy/dist * force;
+                        pj.vx -= dx/dist * force;
+                        pj.vy -= dy/dist * force;
+                    }
+                }
+                // 弹力
+                graphEdges.forEach(e => {
+                    var s = graphPositions[e.srcIdx], t = graphPositions[e.tgtIdx];
+                    if (!s || !t) return; // 节点不存在则跳过
+                    var dx = t.x - s.x, dy = t.y - s.y, d = Math.sqrt(dx*dx+dy*dy) || 1;
+                    var f = (d - 150) * 0.005;
+                    s.vx += dx/d * f; s.vy += dy/d * f;
+                    t.vx -= dx/d * f; t.vy -= dy/d * f;
+                });
+                // 应用
+                graphPositions.forEach(p => {
+                    p.vx *= damp; p.vy *= damp;
+                    p.x += p.vx; p.y += p.vy;
+                    p.x = Math.max(p.size, Math.min(W-p.size, p.x));
+                    p.y = Math.max(p.size, Math.min(H-p.size, p.y));
+                });
+                iter++;
+                drawGraph();
+                if (iter < 300) graphAnimId = requestAnimationFrame(step);
+            }
+            drawGraph();
+            step();
+
+            // 统计
+            const entityCount = showConnected ? filtered.length : entities.length;
+            const relationCount = graphEdges.length;
+            console.log('loadGraph: setting counts - entityCount=', entityCount, 'relationCount=', relationCount);
+            document.getElementById('graph-entity-count').textContent = entityCount;
+            document.getElementById('graph-relation-count').textContent = relationCount;
+
+            // 鼠标交互
+            var dragIdx = -1;
+            graphHoveredIdx = -1;
+            graphCanvas.onmousedown = function(e) {
+                var mx = e.offsetX, my = e.offsetY;
+                for (var i = graphPositions.length-1; i >= 0; i--) {
+                    var p = graphPositions[i];
+                    var dx = mx - p.x, dy = my - p.y;
+                    if (dx*dx+dy*dy < p.size*p.size/4+25) { dragIdx = i; graphCanvas.style.cursor = 'grabbing'; break; }
+                }
+            };
+            graphCanvas.onmousemove = function(e) {
+                if (dragIdx >= 0) {
+                    graphPositions[dragIdx].x = e.offsetX;
+                    graphPositions[dragIdx].y = e.offsetY;
+                    graphPositions[dragIdx].vx = 0;
+                    graphPositions[dragIdx].vy = 0;
+                    drawGraph();
+                    return;
+                }
+                var mx = e.offsetX, my = e.offsetY, h = -1;
+                for (var i = graphPositions.length-1; i >= 0; i--) {
+                    var dx = mx - graphPositions[i].x, dy = my - graphPositions[i].y;
+                    if (dx*dx+dy*dy < graphPositions[i].size*graphPositions[i].size/4) { h = i; break; }
+                }
+                if (graphHoveredIdx !== h) { graphHoveredIdx = h; graphCanvas.style.cursor = h >= 0 ? 'pointer' : 'grab'; drawGraph(); }
+            };
+            graphCanvas.onmouseup = function(e) {
+                if (dragIdx >= 0) {
+                    var p = graphPositions[dragIdx];
+                    var dx = p.x - (e.offsetX || p.x), dy = p.y - (e.offsetY || p.y);
+                    if (Math.abs(dx) < 3 && Math.abs(dy) < 3) showEntityDetail(p.raw);
+                    dragIdx = -1;
+                    graphCanvas.style.cursor = graphHoveredIdx >= 0 ? 'pointer' : 'grab';
+                } else {
+                    // 点击空白区域 → 关闭详情面板
+                    closeDetailPanel();
+                }
+            };
+        }
+
+        function drawGraph() {
+            console.log('drawGraph called, graphCtx:', !!graphCtx, 'graphPositions length:', graphPositions ? graphPositions.length : 0);
+            if (!graphCtx) return;
+            var ctx = graphCtx, W = graphCanvas.width, H = graphCanvas.height;
+            ctx.clearRect(0, 0, W, H);
+            console.log('Cleared canvas, size:', W, 'x', H);
+
+            // 边
+            graphEdges.forEach(e => {
+                var s = graphPositions[e.srcIdx], t = graphPositions[e.tgtIdx];
+                if (!s || !t) return; // 节点不存在则跳过
+                ctx.beginPath();
+                ctx.moveTo(s.x, s.y);
+                ctx.lineTo(t.x, t.y);
+                ctx.strokeStyle = '#ccc';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            });
+            console.log('Drew', graphEdges.length, 'edges');
+
+            // 节点
+            graphPositions.forEach((p, i) => {
+                var r = p.size / 2;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, r, 0, 2*Math.PI);
+                ctx.fillStyle = p.color;
+                ctx.fill();
+                ctx.strokeStyle = (i === graphHoveredIdx) ? '#333' : '#fff';
+                ctx.lineWidth = (i === graphHoveredIdx) ? 2.5 : 1.5;
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+
+                // 标签
+                ctx.fillStyle = '#222';
+                ctx.font = '10px sans-serif';
+                var txt = p.name.length > 7 ? p.name.slice(0,7)+'.' : p.name;
+                ctx.fillText(txt, p.x + r + 3, p.y + 4);
+            });
+            console.log('Drew', graphPositions.length, 'nodes');
         }
 
         // 导出图谱
         function exportGraph() {
-            if (graphChart) {
-                const url = graphChart.getDataURL({
-                    type: 'png',
-                    pixelRatio: 2,
-                    backgroundColor: '#fff'
-                });
-                const a = document.createElement('a');
-                a.href = url;
+            if (graphCanvas) {
+                var a = document.createElement('a');
                 a.download = 'wiki-graph.png';
+                a.href = graphCanvas.toDataURL();
                 a.click();
             }
         }
 
-        // LLM 审核功能
-        async function runLLMReview() {
-            const type = document.getElementById('llm-type').value;
-
-            if (type === 'entity') {
-                await reviewEntities();
-            } else {
-                await reviewRelations();
-            }
-        }
-
-        async function reviewEntities() {
-            const content = document.getElementById('llm-results');
-            document.getElementById('llm-modal-title').textContent = 'LLM 审核实体';
-            document.getElementById('llm-modal').style.display = 'block';
-            content.innerHTML = '<div class="empty-state"><span class="loading"></span> LLM 正在审核实体...</div>';
-
+        // LLM 精筛 + 关系提取 + 设置管理
+        async function loadLLMSettings() {
             try {
-                const res = await fetch('/api/llm/review-entities');
+                const res = await fetch('/api/settings');
                 const data = await res.json();
                 if (data.success) {
-                    try {
-                        const result = JSON.parse(data.result);
-                        let html = `
-                            <div style="line-height: 1.8;">
-                                <h3 style="color: #1890ff; margin-bottom: 15px;">LLM 审核结果</h3>
-                                <div style="margin-bottom: 15px;">
-                                    <h4 style="color: #52c41a; margin-bottom: 8px;">通过: ${result.valid ? result.valid.length : 0} 项</h4>
-                                    <div style="background: #f6ffed; padding: 10px; border-radius: 4px; border: 1px solid #b7eb8f; max-height: 200px; overflow-y: auto;">${Array.isArray(result.valid) ? result.valid.map(item => `<div style="margin: 4px 0; color: #389e0d;">✓ ${escapeHtml(String(item))}</div>`).join('') : '<div style="color: #999;">无</div>'}</div>
-                                </div>
-                                <div style="margin-bottom: 15px;">
-                                    <h4 style="color: #ff4d4f; margin-bottom: 8px;">拒绝: ${result.invalid ? result.invalid.length : 0} 项</h4>
-                                    <div style="background: #fff1f0; padding: 10px; border-radius: 4px; border: 1px solid #ffa39e; max-height: 200px; overflow-y: auto;">${Array.isArray(result.invalid) ? result.invalid.map(item => `<div style="margin: 4px 0; color: #cf1322;">✗ ${escapeHtml(String(item))}</div>`).join('') : '<div style="color: #999;">无</div>'}</div>
-                                </div>
-                                <div style="background: #e6f7ff; padding: 10px; border-radius: 4px; border: 1px solid #91d5ff; margin-bottom: 15px;">
-                                    <h4 style="color: #1890ff; margin-bottom: 5px;">说明</h4>
-                                    <div style="color: #096dd9; white-space: pre-wrap;">${escapeHtml(result.reason || '无')}</div>
-                                </div>
-                                <button class="btn btn-primary" onclick="applyLLMReview('entity', JSON.stringify(result))">应用审核结果</button>
-                            </div>
-                        `;
-                        content.innerHTML = html;
-                    } catch (e) {
-                        content.innerHTML = `
-                            <div style="line-height: 1.8;">
-                                <h3 style="color: #1890ff; margin-bottom: 15px;">LLM 审核结果</h3>
-                                <pre style="background: #f5f5f5; padding: 15px; border-radius: 4px; white-space: pre-wrap; max-height: 500px; overflow-y: auto;">${escapeHtml(data.result)}</pre>
-                            </div>
-                        `;
+                    const s = data.settings;
+                    if (s.llm_endpoint) document.getElementById('llm-endpoint').value = s.llm_endpoint;
+                    if (s.llm_api_key) document.getElementById('llm-key').value = s.llm_api_key;
+                    if (s.llm_model) document.getElementById('llm-model').value = s.llm_model;
+                    if (s.domain_type) document.getElementById('domain-select').value = s.domain_type;
+
+                    // 加载预设列表
+                    window.__llm_profiles = data.profiles || [];
+                    const sel = document.getElementById('llm-profile-select');
+                    sel.innerHTML = '<option value="">-- 选择模型预设 --</option>' +
+                        window.__llm_profiles.map(p => `<option>${escapeHtml(p.name)}</option>`).join('');
+
+                    // 自动匹配当前生效的预设
+                    const curEndpoint = s.llm_endpoint || '';
+                    const curModel = s.llm_model || '';
+                    for (let i = 0; i < window.__llm_profiles.length; i++) {
+                        if (window.__llm_profiles[i].endpoint === curEndpoint && window.__llm_profiles[i].model === curModel) {
+                            sel.selectedIndex = i + 1;
+                            break;
+                        }
                     }
-                                } else {
-                    content.innerHTML = `<div class="empty-state">审核失败: ${escapeHtml(data.error)}</div>`;
                 }
-            } catch (e) {
-                content.innerHTML = `<div class="empty-state">审核失败: ${escapeHtml(e.message)}</div>`;
-            }
+            } catch (e) { console.error('加载LLM设置失败:', e); }
         }
 
-        async function reviewRelations() {
-            const content = document.getElementById('llm-results');
-            document.getElementById('llm-modal-title').textContent = 'LLM 审核关系';
-            document.getElementById('llm-modal').style.display = 'block';
-            content.innerHTML = '<div class="empty-state"><span class="loading"></span> LLM 正在审核关系...</div>';
-
+        async function loadSources() {
             try {
-                const res = await fetch('/api/llm/review-relations');
+                const res = await fetch('/api/sources');
+                const data = await res.json();
+                if (data.success && data.sources) {
+                    const sel = document.getElementById('source-select');
+                    const statsDiv = document.getElementById('refine-stats');
+                    // 如果统计显示区域不存在，动态创建（以防万一）
+                    if (!statsDiv) {
+                        const panel = document.querySelector('#panel-llm .panel-header');
+                        if (panel) {
+                            const div = document.createElement('div');
+                            div.id = 'refine-stats';
+                            div.style.cssText = 'margin-bottom: 10px; font-size: 13px; color: #666;';
+                            panel.parentNode.insertBefore(div, panel.nextSibling);
+                        }
+                    }
+                    let html = '<option value="">-- 选择来源文件 --</option>';
+                    let total = 0, refined = 0;
+                    data.sources.forEach(s => {
+                        total++;
+                        let statusText = '';
+                        let icon = '';
+                        let relInfo = '';
+                        if (s.status === 'refined_with_rel') {
+                            refined++;
+                            icon = '🟢';
+                            statusText = `已精炼 (${s.relations}关系)`;
+                        } else if (s.status === 'refined_empty') {
+                            icon = '🟡';
+                            statusText = '已精炼 (无关系)';
+                        } else if (s.status === 'no_entities') {
+                            icon = '⚪';
+                            statusText = '无实体';
+                        } else {
+                            icon = '🔴';
+                            statusText = '未精炼';
+                        }
+                        // 转义来源名称防止XSS
+                        const safeSource = escapeHtml(s.name);
+                        html += `<option value="${safeSource}">${icon} ${safeSource} (${statusText})</option>`;
+                    });
+                    sel.innerHTML = html;
+                    // 更新统计
+                    const statsEl = document.getElementById('refine-stats');
+                    if (statsEl) {
+                        statsEl.innerHTML = `精炼覆盖: <strong>${refined}</strong> / ${total} 文档`;
+                    }
+                }
+            } catch (e) { console.error('加载来源失败:', e); }
+        }
+
+        async function saveLLMSettings() {
+            const settings = {
+                domain_type: document.getElementById('domain-select').value,
+                llm_endpoint: document.getElementById('llm-endpoint').value,
+                llm_api_key: document.getElementById('llm-key').value,
+                llm_model: document.getElementById('llm-model').value,
+            };
+            // 如果选中了预设，更新该预设的配置
+            const sel = document.getElementById('llm-profile-select');
+            if (sel.selectedIndex > 0) {
+                const idx = sel.selectedIndex - 1;
+                const profiles = window.__llm_profiles || [];
+                if (profiles[idx]) {
+                    profiles[idx].endpoint = settings.llm_endpoint;
+                    profiles[idx].api_key = settings.llm_api_key;
+                    profiles[idx].model = settings.llm_model;
+                }
+                settings.llm_profiles = JSON.stringify(profiles);
+            }
+            try {
+                const res = await fetch('/api/settings/update', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({settings})
+                });
                 const data = await res.json();
                 if (data.success) {
-                    try {
-                        const result = JSON.parse(data.result);
-                        let html = `
-                            <div style="line-height: 1.8;">
-                                <h3 style="color: #1890ff; margin-bottom: 15px;">LLM 审核结果</h3>
-                                <div style="margin-bottom: 15px;">
-                                    <h4 style="color: #52c41a; margin-bottom: 8px;">通过: ${result.valid ? result.valid.length : 0} 项</h4>
-                                    <div style="background: #f6ffed; padding: 10px; border-radius: 4px; border: 1px solid #b7eb8f; max-height: 200px; overflow-y: auto;">${Array.isArray(result.valid) ? result.valid.map(item => `<div style="margin: 4px 0; color: #389e0d;">✓ ${escapeHtml(String(item[0]))} - ${escapeHtml(String(item[2]))} - ${escapeHtml(String(item[1]))}</div>`).join('') : '<div style="color: #999;">无</div>'}</div>
-                                </div>
-                                <div style="margin-bottom: 15px;">
-                                    <h4 style="color: #ff4d4f; margin-bottom: 8px;">拒绝: ${result.invalid ? result.invalid.length : 0} 项</h4>
-                                    <div style="background: #fff1f0; padding: 10px; border-radius: 4px; border: 1px solid #ffa39e; max-height: 200px; overflow-y: auto;">${Array.isArray(result.invalid) ? result.invalid.map(item => `<div style="margin: 4px 0; color: #cf1322;">✗ ${escapeHtml(String(item[0]))} - ${escapeHtml(String(item[2]))} - ${escapeHtml(String(item[1]))}</div>`).join('') : '<div style="color: #999;">无</div>'}</div>
-                                </div>
-                                <div style="background: #e6f7ff; padding: 10px; border-radius: 4px; border: 1px solid #91d5ff; margin-bottom: 15px;">
-                                    <h4 style="color: #1890ff; margin-bottom: 5px;">说明</h4>
-                                    <div style="color: #096dd9; white-space: pre-wrap;">${escapeHtml(result.reason || '无')}</div>
-                                </div>
-                                <button class="btn btn-primary" onclick="applyLLMReview('relation', JSON.stringify(result))">应用审核结果</button>
-                            </div>
-                        `;
-                        content.innerHTML = html;
-                    } catch (e) {
-                        content.innerHTML = `
-                            <div style="line-height: 1.8;">
-                                <h3 style="color: #1890ff; margin-bottom: 15px;">LLM 审核结果</h3>
-                                <pre style="background: #f5f5f5; padding: 15px; border-radius: 4px; white-space: pre-wrap; max-height: 500px; overflow-y: auto;">${escapeHtml(data.result)}</pre>
-                            </div>
-                        `;
-                    }
-                                } else {
-                    content.innerHTML = `<div class="empty-state">审核失败: ${escapeHtml(data.error)}</div>`;
+                    showToast('LLM 设置已保存', 'success');
+                } else {
+                    showToast('保存失败: ' + data.error, 'error');
                 }
-            } catch (e) {
-                content.innerHTML = `<div class="empty-state">审核失败: ${escapeHtml(e.message)}</div>`;
+            } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+        }
+
+        function switchProfile() {
+            const sel = document.getElementById('llm-profile-select');
+            const idx = sel.selectedIndex;
+            if (idx <= 0) return;
+            const profiles = window.__llm_profiles || [];
+            const p = profiles[idx - 1];
+            if (p) {
+                document.getElementById('llm-endpoint').value = p.endpoint || '';
+                document.getElementById('llm-key').value = p.api_key || '';
+                document.getElementById('llm-model').value = p.model || '';
             }
         }
 
-        async function applyLLMReview(type, result) {
-            // 如果 result 是字符串，先解析为对象
-            if (typeof result === 'string') {
-                result = JSON.parse(result);
-            }
-            
-            let entities = [];
-            let relations = [];
+        async function updateDomain() {
+            const domain = document.getElementById('domain-select').value;
+            await saveLLMSettings();
+        }
 
-            if (type === 'entity') {
-                entities = result.valid || [];
-            } else {
-                relations = result.valid || [];
-            }
+        function escapeHtml(str) {
+            var div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
 
-            if (!entities.length && !relations.length) {
-                showToast('没有可应用的审核结果', 'error');
-                return;
-            }
-
-            if (!confirm(`确认应用审核结果吗？
-通过: ${entities.length + relations.length} 项
-
-此操作将批量批准这些项目。`)) {
-                return;
-            }
-
-            let successCount = 0;
-            let failCount = 0;
-
+        async function runRefineEntities() {
+            const source = document.getElementById('source-select').value;
+            if (!source) { showToast('请先选择来源文件', 'error'); return; }
+            const content = document.getElementById('llm-results');
+            content.innerHTML = '<div class="empty-state"><span class="loading"></span> LLM 正在精筛实体...</div>';
             try {
-                if (entities.length > 0) {
-                    const res = await fetch('/api/entities/batch-approve', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({entity_ids: entities})
-                    });
-                    const data = await res.json();
-                    if (data.success) {
-                        successCount += data.approved_count || entities.length;
-                        failCount += (entities.length - successCount);
-                    } else {
-                        failCount += entities.length;
+                const res = await fetch('/api/llm/refine-entities', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({source})
+                });
+                const data = await res.json();
+                if (data.success) {
+                    const r = data.result;
+                    const source_val = source;
+                    let html = `<div style="line-height: 1.8;"><h3 style="color: #1890ff; margin-bottom: 15px;">LLM 精筛结果</h3>`;
+                    html += `<p>总实体: ${r.entities.length + r.removed.length} → 保留: ${r.entities.length}, 删除: ${r.removed.length}</p>`;
+                    if (r.suggestions) html += `<div style="padding: 8px; background: #e6f7ff; border-radius: 4px; margin: 8px 0;">💡 ${escapeHtml(String(r.suggestions))}</div>`;
+                    html += `<h4 style="color: #52c41a; margin: 8px 0;">保留实体</h4><ul style="max-height: 300px; overflow-y: auto;">`;
+                    (r.entities||[]).forEach(e => { html += `<li style="color: #389e0d;">${escapeHtml(e.name||'?')} (${escapeHtml(e.type||'')})</li>`; });
+                    html += '</ul>';
+                    if ((r.removed||[]).length > 0) {
+                        html += `<h4 style="color: #ff4d4f; margin: 8px 0;">删除实体</h4><ul style="max-height: 200px; overflow-y: auto;">`;
+                        r.removed.forEach(e => { html += `<li style="color: #cf1322;">${escapeHtml(e.name||'?')}</li>`; });
+                        html += '</ul>';
                     }
+                    // 存到全局变量，按钮点一下从变量读
+                    window.__refineResult = { source: source_val, entities: r.entities, removed: r.removed || [] };
+                    html += `<div style="margin-top: 16px;"><button class="btn btn-success" onclick="applyRefineResult()">应用精筛结果（删除无效实体+更新类型）</button><span style="margin-left: 8px; color: #999; font-size: 13px;">保留 ${r.entities.length} 个，删除 ${(r.removed||[]).length} 个</span></div>`;
+                    html += '</div>';
+                    content.innerHTML = html;
+                } else {
+                    content.innerHTML = `<div class="empty-state">精筛失败: ${escapeHtml(data.error)}</div>`;
                 }
+            } catch (e) { content.innerHTML = `<div class="empty-state">请求失败: ${escapeHtml(e.message)}</div>`; }
+        }
 
-                if (relations.length > 0) {
-                    const res = await fetch('/api/relations/batch-approve', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({relation_ids: relations})
-                    });
-                    const data = await res.json();
-                    if (data.success) {
-                        successCount += data.approved_count || relations.length;
-                        failCount += (relations.length - successCount);
-                    } else {
-                        failCount += relations.length;
-                    }
+        // 全局变量存储预览数据
+        let pendingChanges = null;
+
+        async function runRefineAndExtract() {
+            const source = document.getElementById('source-select').value;
+            if (!source) { showToast('请先选择来源文件', 'error'); return; }
+            const content = document.getElementById('llm-results');
+            content.innerHTML = '<div class="empty-state"><span class="loading"></span> 正在执行一键精炼（LLM 处理中，请稍候）...</div>';
+            try {
+                const res = await fetch('/api/llm/refine-and-extract', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({source})
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    content.innerHTML = `<div class="empty-state">精炼失败: ${escapeHtml(data.error)}</div>`;
+                    return;
                 }
+                pendingChanges = data;
+                renderPreview(data);
+            } catch (e) {
+                content.innerHTML = `<div class="empty-state">请求失败: ${escapeHtml(e.message)}</div>`;
+            }
+        }
 
-                if (successCount > 0) {
-                    showToast(`成功应用 ${successCount} 项审核结果`, 'success');
-                    document.getElementById('llm-modal').style.display = 'none';
+        function renderPreview(data) {
+            const content = document.getElementById('llm-results');
+            let html = `<div style="line-height:1.8;"><h3 style="color:#1890ff;">精炼预览</h3>`;
+            html += `<p>来源: ${escapeHtml(document.getElementById('source-select').value)}</p>`;
+            html += `<p>候选实体数: ${data.candidate_count || 0}</p>`;
+            html += `<p>有效实体: ${data.valid ? data.valid.length : 0}</p>`;
+            html += `<p>删除实体: ${data.removed ? data.removed.length : 0}</p>`;
+            if (data.has_relations) {
+                html += `<p>关系提取: ${data.relations ? data.relations.length : 0} 条</p>`;
+            } else {
+                html += `<p style="color:#faad14;">关系提取: 未返回（可忽略）</p>`;
+            }
+            // 有效实体详情
+            if (data.valid && data.valid.length > 0) {
+                html += `<details><summary>查看有效实体详情</summary><ul>`;
+                data.valid.forEach(v => html += `<li>${escapeHtml(v.name)} → ${escapeHtml(v.recommended_type||'')}</li>`);
+                html += `</ul></details>`;
+            }
+            // 待删除
+            if (data.removed && data.removed.length > 0) {
+                html += `<details><summary>查看待删除实体</summary><ul>`;
+                data.removed.forEach(v => html += `<li>${escapeHtml(v.name)}</li>`);
+                html += `</ul></details>`;
+            }
+            // 关系
+            if (data.has_relations && data.relations && data.relations.length > 0) {
+                html += `<details><summary>查看关系列表</summary><ul>`;
+                data.relations.forEach(r => html += `<li>${escapeHtml(r.source)} → ${escapeHtml(r.rel_type)} → ${escapeHtml(r.target)}</li>`);
+                html += `</ul></details>`;
+            }
+            // 确认按钮
+            html += `<div style="margin-top:16px;">`;
+            html += `<button class="btn btn-success" onclick="applyChanges(true)" style="margin-right:10px;">应用全部（实体+关系）</button>`;
+            html += `<button class="btn btn-primary" onclick="applyChanges(false)">仅应用实体变更</button>`;
+            html += `<button class="btn btn-secondary" onclick="cancelChanges()" style="margin-left:10px;">取消</button>`;
+            html += `</div></div>`;
+            content.innerHTML = html;
+        }
+
+        async function applyChanges(applyRelations) {
+            if (!pendingChanges) return;
+            const source = document.getElementById('source-select').value;
+            try {
+                const res = await fetch('/api/llm/apply-changes', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        source: source,
+                        valid: pendingChanges.valid || [],
+                        removed: pendingChanges.removed || [],
+                        relations: pendingChanges.relations || [],
+                        apply_relations: applyRelations
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`应用完成: 删除${data.deleted}个, 更新${data.updated}个, 导入${data.imported_relations}条关系`, 'success');
+                    pendingChanges = null;
                     loadStats();
-                    loadEntities();
-                    loadRelations();
-                }
-                if (failCount > 0) {
-                    showToast(`应用失败: ${failCount} 项`, 'error');
+                    loadSources();  // 刷新精炼状态
+                    document.getElementById('llm-results').innerHTML = '<div class="empty-state">变更已应用</div>';
+                } else {
+                    showToast('应用失败: ' + data.error, 'error');
                 }
             } catch (e) {
-                showToast(`应用失败: ${e.message}`, 'error');
+                showToast('应用失败: ' + e.message, 'error');
             }
+        }
+
+        function cancelChanges() {
+            pendingChanges = null;
+            document.getElementById('llm-results').innerHTML = '<div class="empty-state">已取消</div>';
+        }
+
+        async function runExtractRelations() {
+            const source = document.getElementById('source-select').value;
+            if (!source) { showToast('请先选择来源文件', 'error'); return; }
+            const content = document.getElementById('llm-results');
+            content.innerHTML = '<div class="empty-state"><span class="loading"></span> LLM 正在提取关系...</div>';
+            try {
+                const res = await fetch('/api/llm/extract-relations', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({source})
+                });
+                const data = await res.json();
+                if (data.success) {
+                    const rels = data.relations || [];
+                    let html = '<div style="line-height: 1.8;"><h3 style="color: #1890ff; margin-bottom: 15px;">关系提取结果</h3>';
+                    html += `<p>提取: ${rels.length} 条关系</p>`;
+                    if (rels.length > 0) {
+                        html += '<table style="width: 100%; border-collapse: collapse; margin-top: 10px;"><thead><tr style="background: #f5f5f5;"><th style="padding: 6px; text-align: left;">源实体</th><th style="padding: 6px; text-align: left;">关系类型</th><th style="padding: 6px; text-align: left;">目标实体</th></tr></thead><tbody>';
+                        rels.forEach(r => {
+                            html += `<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">${escapeHtml(r.source||'')}</td><td style="padding: 6px; border-bottom: 1px solid #eee; color: #1890ff;">${escapeHtml(r.type||'')}</td><td style="padding: 6px; border-bottom: 1px solid #eee;">${escapeHtml(r.target||'')}</td></tr>`;
+                        });
+                        html += '</tbody></table>';
+                        html += `<button class="btn btn-primary" onclick="importRelations(${JSON.stringify(rels)})" style="margin-top: 12px;">导入所有关系</button>`;
+                    } else {
+                        html += '<p style="color: #999;">未提取到任何关系</p>';
+                    }
+                    html += '</div>';
+                    content.innerHTML = html;
+                } else {
+                    content.innerHTML = `<div class="empty-state">提取失败: ${escapeHtml(data.error)}</div>`;
+                }
+            } catch (e) { content.innerHTML = `<div class="empty-state">请求失败: ${escapeHtml(e.message)}</div>`; }
+        }
+
+        async function importRelations(rels) {
+            if (!confirm(`确认导入 ${rels.length} 条关系？`)) return;
+            try {
+                const res = await fetch('/api/relations/batch-import', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({relations: rels})
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`成功导入 ${data.imported} 条关系`, 'success');
+                    loadStats();
+                } else {
+                    showToast('导入失败: ' + data.error, 'error');
+                }
+            } catch (e) { showToast('导入失败: ' + e.message, 'error'); }
+        }
+
+        async function applyRefineResult() {
+            const rr = window.__refineResult;
+            if (!rr) { showToast('无精筛结果', 'error'); return; }
+            const removed = rr.removed || [];
+            const entities = rr.entities || [];
+            if (!confirm(`确认应用精筛结果？\n删除 ${removed.length} 个无效实体\n更新 ${entities.length} 个实体的分类`)) return;
+            try {
+                const res = await fetch('/api/llm/apply-refine', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({source: document.getElementById('source-select').value, entities, removed})
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`已应用: 删除${data.deleted}个, 更新${data.updated}个`, 'success');
+                    loadStats();
+                } else {
+                    showToast('应用失败: ' + data.error, 'error');
+                }
+            } catch (e) { showToast('应用失败: ' + e.message, 'error'); }
         }
 
         function closeLLMModal() {
@@ -1849,13 +2805,77 @@ def api_entities():
     # GET 请求：获取实体列表
     conn = get_db_connection()
     try:
-        cursor = conn.execute('''
-            SELECT id, name, type, properties, source_chapter, status
-            FROM entities
-            ORDER BY id DESC
-            LIMIT 100
-        ''')
-        entities = [dict(row) for row in cursor.fetchall()]
+        query = request.args.get('query', '')  # 搜索关键词（可选）
+        entity_filter = request.args.get('entity_name', '')  # 单实体扩展模式
+        limit = request.args.get('limit', 500, type=int)
+        connected_only = request.args.get('connected_only', '').lower() in ('1', 'true', 'yes')
+
+        if query:
+            # 搜索模式
+            cursor = conn.execute('''
+                SELECT id, name, type, properties, source_chapter, status
+                FROM entities
+                WHERE name LIKE ? OR type LIKE ?
+                ORDER BY id DESC
+                LIMIT ?
+            ''', (f'%{query}%', f'%{query}%', limit))
+            entities = [dict(row) for row in cursor.fetchall()]
+        elif entity_filter:
+            # 按实体名扩展：返回与该实体有关系 + 附近节点
+            cursor = conn.execute('''
+                SELECT DISTINCT e.id, e.name, e.type, e.properties, e.source_chapter, e.status
+                FROM entities e
+                LEFT JOIN relationships r ON e.id = r.source_id OR e.id = r.target_id
+                LEFT JOIN entities se ON r.source_id = se.id
+                LEFT JOIN entities te ON r.target_id = te.id
+                WHERE se.name = ? OR te.name = ?
+                LIMIT ?
+            ''', (entity_filter, entity_filter, limit))
+            entities = [dict(row) for row in cursor.fetchall()]
+        else:
+            if connected_only:
+                # 仅返回有关系的实体
+                cursor = conn.execute('''
+                    SELECT e.id, e.name, e.type, e.properties, e.source_chapter, e.status
+                    FROM entities e
+                    WHERE e.id IN (
+                        SELECT DISTINCT source_id FROM relationships
+                        UNION
+                        SELECT DISTINCT target_id FROM relationships
+                    )
+                    ORDER BY e.id DESC
+                    LIMIT ?
+                ''', (limit,))
+                entities = [dict(row) for row in cursor.fetchall()]
+            else:
+                # 优先显示有关系的实体 + 不够时补孤立的
+                cursor = conn.execute('''
+                    SELECT e.id, e.name, e.type, e.properties, e.source_chapter, e.status
+                    FROM entities e
+                    WHERE e.id IN (
+                        SELECT DISTINCT source_id FROM relationships
+                        UNION
+                        SELECT DISTINCT target_id FROM relationships
+                    )
+                    ORDER BY e.id DESC
+                    LIMIT ?
+                ''', (limit,))
+                entities = [dict(row) for row in cursor.fetchall()]
+
+                if len(entities) < limit:
+                    cursor2 = conn.execute('''
+                        SELECT e.id, e.name, e.type, e.properties, e.source_chapter, e.status
+                        FROM entities e
+                        WHERE e.id NOT IN (
+                            SELECT DISTINCT source_id FROM relationships
+                            UNION
+                            SELECT DISTINCT target_id FROM relationships
+                        )
+                        ORDER BY e.id DESC
+                        LIMIT ?
+                    ''', (limit - len(entities),))
+                    entities.extend([dict(row) for row in cursor2.fetchall()])
+
         return jsonify({"entities": entities})
     finally:
         conn.close()
@@ -1919,18 +2939,60 @@ def approve_relation(relation_id):
 
 @app.route('/api/relations', methods=['GET'])
 def get_relations():
-    """获取所有关系（限制100条）"""
+    """获取所有关系"""
     conn = get_db_connection()
     try:
-        cursor = conn.execute('''
-            SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
-                   src.name as source_name, tgt.name as target_name
-            FROM relationships r
-            LEFT JOIN entities src ON r.source_id = src.id
-            LEFT JOIN entities tgt ON r.target_id = tgt.id
-            ORDER BY r.id DESC
-            LIMIT 100
-        ''')
+        limit = request.args.get('limit', 500, type=int)  # 默认最多500条
+        entity_name = request.args.get('entity', '')
+        role = request.args.get('role', 'both')  # source / target / both
+
+        if entity_name:
+            # 按实体筛选
+            if role == 'source':
+                cursor = conn.execute('''
+                    SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
+                           src.name as source_name, tgt.name as target_name
+                    FROM relationships r
+                    LEFT JOIN entities src ON r.source_id = src.id
+                    LEFT JOIN entities tgt ON r.target_id = tgt.id
+                    WHERE src.name = ?
+                    ORDER BY r.id DESC
+                    LIMIT ?
+                ''', (entity_name, limit))
+            elif role == 'target':
+                cursor = conn.execute('''
+                    SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
+                           src.name as source_name, tgt.name as target_name
+                    FROM relationships r
+                    LEFT JOIN entities src ON r.source_id = src.id
+                    LEFT JOIN entities tgt ON r.target_id = tgt.id
+                    WHERE tgt.name = ?
+                    ORDER BY r.id DESC
+                    LIMIT ?
+                ''', (entity_name, limit))
+            else:
+                cursor = conn.execute('''
+                    SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
+                           src.name as source_name, tgt.name as target_name
+                    FROM relationships r
+                    LEFT JOIN entities src ON r.source_id = src.id
+                    LEFT JOIN entities tgt ON r.target_id = tgt.id
+                    WHERE src.name = ? OR tgt.name = ?
+                    ORDER BY r.id DESC
+                    LIMIT ?
+                ''', (entity_name, entity_name, limit))
+        else:
+            cursor = conn.execute('''
+                SELECT r.id, r.source_id, r.target_id, r.rel_type, r.source_chapter,
+                       src.name as source_name, tgt.name as target_name
+                FROM relationships r
+                LEFT JOIN entities src ON r.source_id = src.id
+                LEFT JOIN entities tgt ON r.target_id = tgt.id
+                WHERE src.name IS NOT NULL AND src.name != ''
+                  AND tgt.name IS NOT NULL AND tgt.name != ''
+                ORDER BY r.id DESC
+                LIMIT ?
+            ''', (limit,))
         relations = [dict(row) for row in cursor.fetchall()]
         return jsonify({"relations": relations, "total": len(relations)})
     except Exception as e:
@@ -1971,28 +3033,30 @@ def add_relation():
 
 @app.route('/api/entities/batch-delete', methods=['POST'])
 def batch_delete_entities():
-    """批量删除实体"""
+    """批量删除实体及其关联关系"""
     try:
         data = request.json
-        entity_ids = data.get('entity_ids', [])
+        entity_ids = data.get('ids', data.get('entity_ids', []))
 
         if not entity_ids:
             return jsonify({"success": False, "error": "未提供实体ID列表"}), 400
 
-        wiki_db = WikiDB(str(DB_PATH))
-        wiki_db.init_db()
-
-        deleted_count = 0
-        for entity_id in entity_ids:
-            try:
-                wiki_db.delete_entity(entity_id)
-                deleted_count += 1
-            except Exception as e:
-                logger.warning(f"删除实体 {entity_id} 失败: {e}")
-
-        return jsonify({"success": True, "deleted_count": deleted_count})
+        conn = get_db_connection()
+        try:
+            # 先删除关联的关系
+            for eid in entity_ids:
+                conn.execute('DELETE FROM relationships WHERE source_id = ? OR target_id = ?', (eid, eid))
+            # 删除实体
+            placeholders = ','.join(['?'] * len(entity_ids))
+            conn.execute(f'DELETE FROM entities WHERE id IN ({placeholders})', entity_ids)
+            conn.commit()
+            deleted = conn.total_changes
+            return jsonify({"success": True, "deleted": deleted, "ids": entity_ids})
+        finally:
+            conn.close()
     except Exception as e:
-        return jsonify({"success": False, "error": "操作失败，请查看日志"}), 500
+        logger.error(f"批量删除失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/api/entities/batch-approve', methods=['POST'])
@@ -2143,6 +3207,47 @@ def import_entities():
         return jsonify({"success": False, "error": "操作失败，请查看日志"}), 500
 
 
+@app.route('/api/relations/batch-import', methods=['POST'])
+def batch_import_relations():
+    """批量导入关系（从 LLM 提取的结果）"""
+    try:
+        data = request.json
+        relations = data.get('relations', [])
+        if not relations:
+            return jsonify({"success": False, "error": "无关系数据"}), 400
+
+        wiki_db = WikiDB(str(DB_PATH))
+        wiki_db.init_db()
+        imported = 0
+        for rel in relations:
+            try:
+                src = rel.get('source', '').strip()
+                tgt = rel.get('target', '').strip()
+                rtype = rel.get('type', '关联')
+                if src and tgt:
+                    # 自动创建缺失的实体
+                    for name in [src, tgt]:
+                        # 检查实体是否存在
+                        existing = wiki_db.get_entity_id(name)
+                        if not existing:
+                            # 使用来源文件名作为 source_chapter
+                            wiki_db.add_entity(
+                                name=name,
+                                entity_type='未知',
+                                source_chapter=rel.get('source_chapter') or 'llm_extracted',
+                                properties={}
+                            )
+                            logger.info(f"自动创建实体: {name}")
+                    # 导入关系
+                    wiki_db.add_relationship(src, tgt, rtype, source_chapter=rel.get('source_chapter'))
+                    imported += 1
+            except Exception as e:
+                logger.warning(f"导入关系 {src}->{tgt} 失败: {e}")
+        return jsonify({"success": True, "imported": imported})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route('/api/llm/review-relations', methods=['GET', 'POST'])
 def llm_review_relations():
     conn = get_db_connection()
@@ -2238,6 +3343,54 @@ def llm_review_entities():
     return jsonify({"success": True, "result": result})
 
 
+# ==================== 知识图谱搜索 ====================
+
+@app.route('/api/graph', methods=['POST'])
+def graph_search():
+    """图搜索（向量召回 + 1-hop 扩展）"""
+    try:
+        data = request.json
+        query = data.get('query', '').strip()
+        top_k = data.get('top_k', 10)
+
+        if not query:
+            return jsonify({"success": False, "error": "搜索关键词不能为空"})
+
+        from rag_core.graph_retriever.retriever import retrieve
+
+        result = retrieve(query, top_k=top_k, hops=1)
+
+        nodes = {}
+        edges = []
+
+        for rel in result.get('seed_relations', []):
+            s, t = rel['source'], rel['target']
+            nodes[s] = {'name': s, 'type': '', 'is_seed': True}
+            nodes[t] = {'name': t, 'type': '', 'is_seed': True}
+
+        for rel in result.get('expanded_edges', []):
+            s, t = rel['source'], rel['target']
+            nodes[s] = nodes.get(s, {'name': s, 'type': '', 'is_seed': False})
+            nodes[t] = nodes.get(t, {'name': t, 'type': '', 'is_seed': False})
+            edges.append({
+                'source': s,
+                'target': t,
+                'rel_type': rel.get('rel_type', '关联'),
+            })
+
+        return jsonify({
+            "success": True,
+            "query": query,
+            "nodes": list(nodes.values()),
+            "edges": edges,
+            "fact_list": result.get('fact_list', [])
+        })
+
+    except Exception as e:
+        logger.exception("图搜索失败")
+        return jsonify({"success": False, "error": str(e)})
+
+
 # ==================== 知识库搜索 ====================
 
 @app.route('/api/search', methods=['POST'])
@@ -2274,6 +3427,372 @@ def search_knowledge():
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)})
 
+
+# ==================== LLM 精筛 & 关系提取 API ====================
+
+@app.route('/api/sources')
+def list_sources():
+    """返回所有已导入文档的来源列表（含实体数、关系数和精炼状态）"""
+    import os
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            """SELECT DISTINCT source FROM chunks ORDER BY source"""
+        ).fetchall()
+        result = []
+        for row in rows:
+            source = row['source']
+            # 用文件名匹配 entities.source_chapter（处理完整路径 vs 文件名的差异）
+            source_basename = os.path.basename(source)
+            ec = conn.execute(
+                'SELECT COUNT(*) FROM entities WHERE source_chapter = ? OR source_chapter = ?',
+                (source, source_basename)
+            ).fetchone()[0]
+            rc = conn.execute(
+                'SELECT COUNT(*) FROM relationships WHERE source_chapter = ? OR source_chapter = ?',
+                (source, source_basename)
+            ).fetchone()[0]
+            cc = conn.execute('SELECT COUNT(*) FROM chunks WHERE source = ?', (source,)).fetchone()[0]
+            # 判断状态
+            if ec == 0:
+                status = 'no_entities'
+            elif rc > 0:
+                status = 'refined_with_rel'
+            else:
+                status = 'refined_empty'  # 有实体但无关系（可能未精炼或精炼无结果）
+            result.append({
+                "name": source,
+                "entities": ec,
+                "chunks": cc,
+                "relations": rc,
+                "status": status
+            })
+        return jsonify({"success": True, "sources": result})
+    finally:
+        conn.close()
+
+
+@app.route('/api/llm/refine-and-extract', methods=['POST'])
+def refine_and_extract():
+    """合并 Prompt 一键精炼：预过滤 + 两段 LLM 调用（精筛 + 关系提取）"""
+    from rag_core.llm_refiner import prefilter_entities, build_combined_prompt
+    import os
+    data = request.json
+    source = data.get('source', '').strip()
+    source_basename = os.path.basename(source) if source else ''
+    if not source:
+        return jsonify({"success": False, "error": "缺少 source 参数"})
+
+    conn = get_db_connection()
+    try:
+        entity_rows = conn.execute(
+            "SELECT id, name, type, source_chapter FROM entities WHERE source_chapter = ? OR source_chapter = ? OR source_chapter = 'regex'",
+            (source, source_basename)
+        ).fetchall()
+        all_entities = [dict(row) for row in entity_rows]
+        chunk_rows = conn.execute(
+            "SELECT text_content FROM chunks WHERE source = ?",
+            (source,)
+        ).fetchall()
+        chunks_text = "\n\n".join([row['text_content'] for row in chunk_rows])
+        if not all_entities or not chunks_text:
+            return jsonify({"success": False, "error": "该来源无实体或无文本"})
+    finally:
+        conn.close()
+
+    # 1. 预过滤
+    candidates = prefilter_entities(all_entities, chunks_text, max_count=150)
+    if not candidates:
+        return jsonify({"success": False, "error": "预过滤后无有效候选实体"})
+
+    # 2. 第一段：精筛实体（简洁 Prompt，确保 content 有值）
+    entity_items = [{"id": e.get("id", ""), "name": e.get("name", ""), "type": e.get("type", "未知")} for e in candidates]
+    entities_json = json.dumps(entity_items, ensure_ascii=False)
+    refine_prompt = f"""你是一个知识图谱实体清洗专家。判断每个候选实体是否有效，无效的需标记删除。
+
+## 删除规则（满足任一即标记为 removed）
+- 完整句子（长度>20字且含虚词"的/了/在/是/和/与"）
+- 单字或无意义词（如"机""文""本"）
+- 包含标点符号
+- 泛指词（"本文""该书""我们""它们"）
+- 2-3字无意义英文缩写（df/pd/np/id/col/val）
+
+## 保留规则
+- 技术概念/算法/工具/指标/方法/框架
+- 在原文中出现且有独立语义，长度 2-20 字
+
+## 候选实体（JSON）
+{entities_json}
+
+只返回 JSON，不要任何解释：{{"valid":[{{"id":"...","name":"...","recommended_type":"类型"}}],"removed":[{{"id":"...","name":"..."}}]}}"""
+
+    try:
+        raw = call_llm(refine_prompt, max_tokens=8000)
+        logger.info(f"refine-and-extract step1: raw_len={len(raw)}")
+        refine_result = _parse_llm_json(raw)
+        valid_entities = refine_result.get('valid', [])
+        removed_entities = refine_result.get('removed', [])
+    except Exception as e:
+        return jsonify({"success": False, "error": f"实体精筛失败: {str(e)}"})
+
+    # 3. 第二段：关系提取（用精筛后的实体）
+    valid_names = [e.get('name', '') for e in valid_entities if e.get('name')]
+    if valid_names:
+        relation_prompt = f"""你是一个知识图谱关系提取专家。从给定的文本中提取实体间的语义关系。
+
+## 实体列表（已精筛）
+{', '.join(valid_names[:50])}
+
+## 文本片段
+{chunks_text[:4000]}
+
+## 关系类型
+使用、对比、改进、属于、开发、评估、包含、提出、适用、关联
+
+只返回 JSON：{{"relations":[{{"source":"实体A","target":"实体B","rel_type":"关系类型","evidence":"依据"}}]}}"""
+        try:
+            rel_raw = call_llm(relation_prompt, max_tokens=8000)
+            logger.info(f"refine-and-extract step2: rel_raw_len={len(rel_raw)}")
+            rel_result = _parse_llm_json(rel_raw)
+            relations = rel_result.get('relations', [])
+        except Exception as e:
+            logger.warning(f"关系提取失败（非致命）: {e}")
+            relations = []
+    else:
+        relations = []
+
+    return jsonify({
+        "success": True,
+        "has_entity_changes": bool(valid_entities or removed_entities),
+        "has_relations": bool(relations),
+        "valid": valid_entities,
+        "removed": removed_entities,
+        "relations": relations,
+        "candidate_count": len(candidates),
+        "message": "预览成功，请确认后应用"
+    })
+
+
+@app.route('/api/llm/apply-changes', methods=['POST'])
+def apply_changes():
+    """应用精筛+关系提取的变更"""
+    import os
+    data = request.json
+    source = data.get('source', '').strip()
+    source_basename = os.path.basename(source) if source else source
+    valid = data.get('valid', [])
+    removed = data.get('removed', [])
+    relations = data.get('relations', [])
+    apply_relations = data.get('apply_relations', True)
+    if not source:
+        return jsonify({"success": False, "error": "缺少 source 参数"})
+
+    conn = get_db_connection()
+    deleted_count = 0
+    updated_count = 0
+    try:
+        for ent in removed:
+            eid = ent.get('id')
+            if eid:
+                cur = conn.execute('DELETE FROM entities WHERE id = ?', (eid,))
+                deleted_count += cur.rowcount
+        for ent in valid:
+            eid = ent.get('id')
+            new_type = ent.get('recommended_type', '').strip()
+            if eid and new_type:
+                cur = conn.execute('UPDATE entities SET type = ? WHERE id = ?', (new_type, eid))
+                updated_count += cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+
+    # 导入关系
+    imported_count = 0
+    if apply_relations and relations:
+        wiki_db = WikiDB(str(DB_PATH))
+        wiki_db.init_db()
+        for rel in relations:
+            src = rel.get('source', '').strip()
+            tgt = rel.get('target', '').strip()
+            rtype = rel.get('rel_type', '关联')
+            if src and tgt:
+                try:
+                    # 如果实体不存在，先创建
+                    for name in [src, tgt]:
+                        if not wiki_db.get_entity_id(name):
+                            wiki_db.add_entity(name, '未知', source_chapter=source_basename)
+                    wiki_db.add_relationship(src, tgt, rtype, source_chapter=source_basename)
+                    imported_count += 1
+                except Exception as e:
+                    logger.warning(f"add_relationship failed ({src}->{tgt}): {e}")
+
+    return jsonify({
+        "success": True,
+        "deleted": deleted_count,
+        "updated": updated_count,
+        "imported_relations": imported_count
+    })
+
+
+@app.route('/api/llm/refine-all', methods=['POST'])
+def refine_all():
+    # 保留旧端点兼容
+    data = request.json
+    return jsonify({"success": False, "error": "请使用 /api/llm/refine-and-extract 新端点"})
+
+
+@app.route('/api/llm/refine-entities', methods=['POST'])
+def refine_entities():
+    """LLM 精筛指定来源文件的实体"""
+    import os
+    data = request.json
+    source = data.get('source', '').strip()
+    source_basename = os.path.basename(source) if source else ''
+    if not source:
+        return jsonify({"success": False, "error": "缺少 source 参数"})
+
+    conn = get_db_connection()
+    try:
+        # 获取来源相关的实体（支持完整路径和文件名两种匹配）
+        entity_rows = conn.execute(
+            "SELECT id, name, type, properties FROM entities WHERE source_chapter = ? OR source_chapter = ? OR source_chapter = 'regex'",
+            (source, source_basename)
+        ).fetchall()
+        entities = [dict(row) for row in entity_rows]
+        if not entities:
+            return jsonify({"success": False, "error": f"source '{source}' 无相关实体"})
+
+        # 获取 chunks 上下文
+        chunk_rows = conn.execute(
+            'SELECT chunk_id, text_content as chunk_text FROM chunks WHERE source = ? LIMIT 20',
+            (source,)
+        ).fetchall()
+        chunks = [dict(row) for row in chunk_rows]
+    finally:
+        conn.close()
+
+    # 调 LLM 精筛
+    settings = get_llm_settings()
+    refiner = LLMRefiner(
+        endpoint=settings.get('llm_endpoint', AGNES_API_BASE),
+        api_key=settings.get('llm_api_key', AGNES_API_KEY),
+        model=settings.get('llm_model', 'agnes-2.0-flash'),
+        domain=settings.get('domain_type', 'machine-learning'),
+    )
+    result = refiner.refine_entities(entities, chunks)
+    return jsonify({"success": True, "result": result})
+
+
+@app.route('/api/llm/apply-refine', methods=['POST'])
+def apply_refine():
+    """应用精筛结果 — 删除无效实体 + 更新分类"""
+    data = request.json
+    entities = data.get('entities', [])
+    removed = data.get('removed', [])
+    source = data.get('source', '')
+
+    conn = get_db_connection()
+    deleted_count = 0
+    updated_count = 0
+    try:
+        # 删除无效实体 — 使用 id 精确定位
+        for ent in removed:
+            eid = ent.get('id')
+            if eid:
+                # 先删除关联关系
+                conn.execute('DELETE FROM relationships WHERE source_id = ? OR target_id = ?', (eid, eid))
+                cur = conn.execute('DELETE FROM entities WHERE id = ?', (eid,))
+                deleted_count += cur.rowcount
+
+        # 更新保留实体的类型 — 使用 id 精确定位
+        for ent in entities:
+            eid = ent.get('id')
+            new_type = ent.get('type', ent.get('recommended_type', '')).strip()
+            if eid and new_type:
+                cur = conn.execute('UPDATE entities SET type = ? WHERE id = ?', (new_type, eid))
+                updated_count += cur.rowcount
+
+        conn.commit()
+        return jsonify({"success": True, "deleted": deleted_count, "updated": updated_count})
+    finally:
+        conn.close()
+
+
+@app.route('/api/llm/extract-relations', methods=['POST'])
+def extract_relations():
+    """LLM 从文本中提取实体间关系"""
+    data = request.json
+    source = data.get('source', '').strip()
+    if not source:
+        return jsonify({"success": False, "error": "缺少 source 参数"})
+
+    conn = get_db_connection()
+    try:
+        entity_rows = conn.execute(
+            "SELECT id, name, type FROM entities WHERE source_chapter = ? OR source_chapter = 'regex'",
+            (source,)
+        ).fetchall()
+        entities = [dict(row) for row in entity_rows]
+
+        chunk_rows = conn.execute(
+            'SELECT chunk_id, text_content as chunk_text FROM chunks WHERE source = ?',
+            (source,)
+        ).fetchall()
+        chunks = [dict(row) for row in chunk_rows]
+    finally:
+        conn.close()
+
+    if not entities or not chunks:
+        return jsonify({"success": False, "error": f"source '{source}' 无实体或无chunk"})
+
+    settings = get_llm_settings()
+    refiner = LLMRefiner(
+        endpoint=settings.get('llm_endpoint', AGNES_API_BASE),
+        api_key=settings.get('llm_api_key', AGNES_API_KEY),
+        model=settings.get('llm_model', 'agnes-2.0-flash'),
+        domain=settings.get('domain_type', 'machine-learning'),
+    )
+    rels = refiner.extract_relations(chunks, entities)
+    return jsonify({"success": True, "relations": rels.get('relations', []), "count": rels.get('count', 0)})
+
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings_api():
+    """获取当前 LLM 配置 + 预设列表"""
+    settings = get_llm_settings()
+    conn = get_db_connection()
+    try:
+        profile_row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'llm_profiles'"
+        ).fetchone()
+        profiles = json.loads(profile_row['value']) if profile_row else []
+    finally:
+        conn.close()
+    return jsonify({"success": True, "settings": settings, "profiles": profiles})
+
+
+@app.route('/api/settings/update', methods=['POST'])
+def update_settings():
+    """更新 LLM 配置"""
+    data = request.json
+    updates = data.get('settings', {})
+    if not updates:
+        return jsonify({"success": False, "error": "缺少 settings 字段"})
+
+    conn = get_db_connection()
+    try:
+        for key, value in updates.items():
+            conn.execute(
+                'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+                (key, value)
+            )
+        conn.commit()
+        return jsonify({"success": True, "updated": list(updates.keys())})
+    finally:
+        conn.close()
+
+
+# ==================== 启动 ====================
 
 if __name__ == '__main__':
     import logging

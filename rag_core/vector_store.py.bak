@@ -1,0 +1,263 @@
+"""
+ChromaDB 向量存储
+"""
+import hashlib
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
+
+from rag_config import (
+    VECTOR_STORE_NAME, VECTOR_STORE_PERSIST_DIR,
+    LOCAL_EMBEDDING_DIM, ADD_BATCH_SIZE, logger
+)
+
+# HNSW 索引参数（低配优化）
+HNSW_PARAMS = {
+    "ef_construction": 50,  # 默认 200，降低以减少内存
+    "ef_search": 10,        # 默认 40，降低以减少查询内存
+    "M": 16,
+}
+from rag_core.embedding_service import get_embeddings
+
+
+from chromadb import Documents, EmbeddingFunction, Embeddings
+
+class _EmbeddingWrapper(EmbeddingFunction):
+    """包装 get_embeddings 以适配 ChromaDB 5.x (__call__) 和 LangChain (embed_documents/embed_query)"""
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return get_embeddings(texts)
+
+    def embed_query(self, text: str) -> List[float]:
+        return get_embeddings([text])[0]
+
+    def __call__(self, input: Documents) -> Embeddings:
+        return get_embeddings(input)
+
+
+class VectorStoreManager:
+    """ChromaDB 向量存储管理器（懒加载 Chroma 实例以避免 TestClient 阻塞）"""
+    
+    def __init__(self, persist_dir: Optional[Path] = None):
+        self.persist_dir = persist_dir or VECTOR_STORE_PERSIST_DIR
+        self.persist_dir.mkdir(parents=True, exist_ok=True)
+        # 不在此处初始化 Chroma，延迟到首次使用时
+        self._vectorstore = None
+    
+    @property
+    def vectorstore(self):
+        """懒加载 Chroma 实例（每次都重新初始化以确保 embedding 函数正确）"""
+        self._vectorstore = Chroma(
+            collection_name=VECTOR_STORE_NAME,
+            persist_directory=str(self.persist_dir),
+            embedding_function=_EmbeddingWrapper(),
+        )
+        logger.debug(f"ChromaDB 初始化完成: {self.persist_dir}")
+        # 手动设置 collection 的 embedding 函数
+        self._vectorstore._collection._embedding_function = self._vectorstore._embedding_function
+        return self._vectorstore
+
+    def reload(self):
+        """重新加载 ChromaDB 集合（用于自动导入后刷新内存视图）"""
+        if self._vectorstore is not None:
+            # 持久化当前数据
+            try:
+                self._vectorstore.persist()
+            except Exception:
+                pass
+            # 销毁旧实例
+            self._vectorstore = None
+        # 下次访问时会重新从磁盘加载
+        logger.debug("ChromaDB 已标记重新加载")
+    
+    def add_documents(self, documents: List[Document], ids: Optional[List[str]] = None) -> None:
+        """添加文档到向量库（分批处理，避免超出长度限制）
+        
+        Args:
+            documents: 文档列表
+            ids: 可选的唯一 ID 列表，如果不提供则自动生成
+        """
+        if not documents:
+            logger.warning("没有文档可添加")
+            return
+        
+        total = len(documents)
+        
+        # 生成唯一 ID（如果未提供）
+        if ids is None:
+            ids = [
+                f"doc_{hashlib.md5((str(doc.metadata.get('global_order', i)) + doc.metadata.get('source', '')).encode()).hexdigest()[:12]}"
+                for i, doc in enumerate(documents)
+            ]
+        
+        # 分批添加
+        added = 0
+        for start in range(0, total, ADD_BATCH_SIZE):
+            end = min(start + ADD_BATCH_SIZE, total)
+            batch_docs = documents[start:end]
+            batch_ids = ids[start:end]
+            
+            try:
+                self.vectorstore.add_documents(batch_docs, ids=batch_ids)
+                added += len(batch_docs)
+                logger.info(
+                    f"添加进度: {added}/{total} ({added*100//total}%) "
+                    f"— 本批 {len(batch_docs)} 个文档块"
+                )
+            except Exception as e:
+                logger.error(f"添加批次 [{start}:{end}] 失败: {e}")
+                raise
+        
+        # 持久化确保数据写入磁盘
+        try:
+            self.vectorstore._collection.persist()
+        except Exception:
+            pass
+        
+        logger.info(f"✅ 全部添加完成: {total} 个文档块到向量库")
+    
+    def add_documents_batched(self, documents: List[Document], batch_size: int = None) -> None:
+        """显式分批添加文档（兼容旧接口）
+        
+        Args:
+            documents: 文档列表
+            batch_size: 每批数量，默认使用 ADD_BATCH_SIZE
+        """
+        if batch_size is None:
+            batch_size = ADD_BATCH_SIZE
+        
+        if not documents:
+            logger.warning("没有文档可添加")
+            return
+        
+        total = len(documents)
+        added = 0
+        
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
+            batch_docs = documents[start:end]
+            
+            try:
+                self.add_documents(batch_docs)
+                added += len(batch_docs)
+                logger.info(
+                    f"添加进度: {added}/{total} ({added*100//total}%) "
+                    f"— 本批 {len(batch_docs)} 个文档块"
+                )
+            except Exception as e:
+                logger.error(f"添加批次 [{start}:{end}] 失败: {e}")
+                raise
+        
+        logger.info(f"✅ 全部添加完成: {total} 个文档块到向量库")
+    
+    def search(self, query: str, top_k: int = 5, score_threshold: float = None) -> List[Tuple[Document, float]]:
+        """
+        相似度搜索
+        
+        Args:
+            query: 查询文本
+            top_k: 返回最大结果数
+            score_threshold: 相似度阈值（已废弃，保留参数兼容性）
+        
+        Returns:
+            (文档, distance分数) 列表，按分数升序排列（越小越相关）
+        """
+        results = self.vectorstore.similarity_search_with_score(query, k=top_k)
+        
+        # 不再使用硬阈值过滤，始终返回 top_k 个最相关的结果
+        # 因为 ChromaDB cosine distance 的实际范围因模型而异
+        # （bge-small-zh-v1.5 的典型范围是 0.5~1.5，而非 0~1）
+        logger.info(f"搜索 '{query[:30]}...', 返回 {len(results)}/{top_k} 个结果")
+        return results
+    
+    def delete_collection(self) -> None:
+        """删除整个向量库（重建用）"""
+        import shutil
+        if self.persist_dir.exists():
+            shutil.rmtree(self.persist_dir)
+            logger.info(f"已删除向量库: {self.persist_dir}")
+    
+    def get_stats(self) -> dict:
+        """获取向量库统计信息"""
+        count = self.vectorstore._collection.count()
+        return {
+            "total_documents": count,
+            "persist_dir": str(self.persist_dir),
+        }
+    
+    def list_documents(self) -> List[dict]:
+        """列出所有已入库文档"""
+        try:
+            results = self.vectorstore._collection.get(include=["metadatas"])
+            docs = []
+            for i, meta in enumerate(results.get("metadatas", [])):
+                docs.append({
+                    "id": results["ids"][i] if results.get("ids") else str(i),
+                    "source": meta.get("source", "unknown") if meta else "unknown",
+                    "metadata": meta or {},
+                })
+            return docs
+        except Exception as e:
+            logger.error(f"列出文档失败: {e}")
+            return []
+    
+    def get_chunk_count(self, source_filename: str) -> int:
+        """获取特定来源的 chunk 数量（支持文件名匹配）"""
+        try:
+            # 获取所有元数据并过滤
+            results = self.vectorstore._collection.get(include=["metadatas"])
+            metadatas = results.get("metadatas", [])
+            
+            # 过滤匹配的文档
+            count = 0
+            for meta in metadatas:
+                source = meta.get("source", "")
+                if source_filename in source:
+                    count += 1
+            
+            return count
+        except Exception as e:
+            logger.error(f"获取 chunk 计数失败: {e}")
+            return 0
+    
+    def delete_by_source(self, source_filename: str) -> int:
+        """按来源删除文档块，返回删除数量
+        
+        Args:
+            source_filename: 文件名或路径的一部分
+        """
+        try:
+            # 获取所有文档
+            all_results = self.vectorstore._collection.get(include=['metadatas'])
+            
+            if not all_results:
+                logger.warning(f"No documents found for source: {source_filename}")
+                return 0
+            
+            # 找出匹配的文档 ID
+            ids_to_delete = []
+            metadatas = all_results.get("metadatas", [])
+            ids = all_results.get("ids", [])
+            
+            if not metadatas or not ids:
+                return 0
+            
+            for i, metadata in enumerate(metadatas):
+                if metadata:
+                    source = metadata.get("source", "")
+                    # 匹配文件名或路径中包含 source_filename 的文档
+                    if source_filename in source:
+                        ids_to_delete.append(ids[i])
+            
+            count = len(ids_to_delete)
+            
+            # 执行删除
+            if count > 0:
+                self.vectorstore._collection.delete(ids=ids_to_delete)
+                logger.info(f"已删除包含 '{source_filename}' 的 {count} 个 chunk")
+            return count
+        except Exception as e:
+            logger.error(f"删除文档失败: {e}")
+            return 0

@@ -2,8 +2,9 @@
 
 **项目路径**：D:/class/project-config/langchain-rag
 **Python 版本**：3.9 (ml_env)
-**最后更新**：2026-07-26
+**最后更新**：2026-07-31
 **存储架构**：libsql（统一存储层）+ FAISS LSH + ChromaDB（回退）
+**Web 界面**：Wiki Manager (5000) + RAG Server (8765)
 
 ---
 
@@ -14,6 +15,9 @@ langchain-rag/
 ├── scripts/                    # 📜 核心脚本
 │   ├── rag_cli.py              # RAG CLI 工具（统一入口）
 │   ├── rag_server_v2.py        # RAG HTTP 服务器
+│   ├── wiki_manager_web.py     # Wiki 知识图谱管理 Web 界面
+│   ├── wiki_review_web.py      # Wiki 审核清理 Web 界面
+│   ├── wiki_graph_web.py       # 知识图谱静态 HTML 生成器
 │   └── rag_extension/          # pi Agent 扩展
 │       └── pi_rag_tool.ts      # 知识库搜索工具（自动启动服务）
 │
@@ -165,6 +169,15 @@ python scripts/rag_cli.py view
 - **[审查总结 KB 修复](docs/review/REVIEW_SUMMARY_KB_FIX.md)** - 审查总结 KB 修复
 - **[审查总结热点系统](docs/review/REVIEW_SUMMARY_HOTSPOT_SYSTEM.md)** - 审查总结热点系统
 
+### 计划与设计文档（docs/plans/）
+- **[脑启发性记忆 RAG 设计](docs/plans/2026-11-03-brain-inspired-memory-rag-design.md)** - 三层记忆模型 + 软遗忘 + 重要性加权
+- **[脑启发性记忆 RAG 实施计划](docs/plans/2026-11-03-brain-inspired-memory-rag-plan.md)** - P0/Phase 1 任务清单 + 验收 V1–V8
+- 更多见 `docs/plans/`
+
+### 代码审查报告（docs/reviews/）
+- **[Phase 1 记忆层审查](docs/reviews/2026-11-04-phase1-memory-review.md)** - 2 Critical + 4 项误报驳回
+- **[审查汇总](docs/reviews/2026-11-03-review-summary.md)** - RAG 稳定性修复审查
+
 ---
 
 ## 🔧 核心功能
@@ -187,6 +200,15 @@ python scripts/rag_cli.py view
 - ✅ 查询向量缓存（避免重复 embedding）
 - ✅ ChromaDB 预热（避免首次搜索冷启动）
 
+### 🧠 脑启发性记忆层（Phase 1，默认关闭）
+- ✅ **静态重要性评分**（规则引擎打底：长度信号 + 4 类关键词 + 来源权重）
+- ✅ **软遗忘**（艾宾浩斯**真半衰期**，默认 7 天，`RAG_RECALL_HALF_LIFE` 可覆盖）——只降权不删除
+- ✅ **检索即强化**（命中后 `access_count` +1、`importance` ×1.05，达阈值标记 `consolidated`）
+- ✅ **可观测端点** `GET /api/memories/stats`（总数 / 语义 / 情景 / 已巩固 / 平均重要性 / 高访问 / 已衰减）
+- ⚙️ **开关**：`RAG_MEMORY_ENABLED=1` 启用（**关闭时行为与旧版完全一致**，零风险回滚）
+- 🔒 **零侵入迁移**：`chunks` 表新增 5 列（`importance` / `access_count` / `last_access` / `memory_type` / `consolidated`，均有默认值）
+- 📄 设计/计划：`docs/plans/2026-11-03-brain-inspired-memory-rag-{design,plan}.md`；调研：`documents/research_brain-inspired-rag.md`
+
 ### 服务管理
 - ✅ RAG 服务自动启动（pi 扩展中集成）
 - ✅ 健康检查端点
@@ -197,6 +219,50 @@ python scripts/rag_cli.py view
 - ✅ 大文件分批加载
 - ✅ 内容去重
 - ✅ 全局计数器
+
+### Web 界面
+- ✅ **Wiki Manager**（端口 5000）：知识图谱可视化 + 图搜索 + LLM 精筛 + 审核清理
+- ✅ **RAG Server**（端口 8765）：知识库 API（搜索/上传/文档管理）
+- ✅ **Wiki Review**：实体/关系审核面板
+- ✅ 模型预设切换（AGNES / GLM-4 / 自定义）
+- ✅ 知识库检索（search_knowledge_base，top_k=5）
+
+### 知识图谱
+- ✅ Canvas 力导向图谱（基于连接数的节点大小和位置）
+- ✅ 节点/边交互（拖拽、点击、悬停）
+- ✅ "仅已连接"过滤
+- ✅ 知识图谱图搜索（基于 ECharts）
+- ✅ 详情面板自动关闭（点击空白区域/切换面板/删除实体）
+
+### 关系抽取
+- ✅ **批量关系抽取**（CLI：`--all` / Web：一键精炼）
+- ✅ **单一入口**（`rag_core/relation_extractor.py`）：导入流水线 Step 4 与 CLI 共用同一实现，杜绝逻辑重复漂移
+- ✅ **错误可观测**：无实体 / 无 chunks / 取 chunks 失败 / LLM 异常均写入 `relations_error`，不再被静默吞掉
+- ✅ AGNES API 集成（agnes-2.0-flash 模型）
+- ✅ Web 界面关系预览和确认
+- ✅ 自动创建缺失实体
+- ✅ 实体-关系数据结构（source/target/type）
+- ✅ 支持多领域（machine-learning, novel, ontology）
+
+### LLM 精炼
+- ✅ **精炼状态显示**（已精炼/未精炼/无实体，带图标和统计）
+- ✅ 实体精筛（jieba TF-IDF + LLM 预过滤）
+- ✅ 关系提取（Few-shot + 严格类型）
+- ✅ "一键精炼"（精筛 + 关系提取合并）
+- ✅ 关系预览和手动导入
+- ✅ 实体/关系审核清理面板
+
+### 数据管理
+- ✅ **批量关系抽取脚本**（`scripts/batch_extract_relations.py`，已退化为**薄 CLI**：全部逻辑在 `rag_core/relation_extractor.py`）
+- ✅ 集成到 `import.py`（Step 2+3+4 自动抽取关系）
+- ✅ Web 批量导入关系增强（自动创建实体）
+- ✅ 实体/关系去重
+- ✅ 关系类型分布统计（适用/使用/依赖/优化/组成/关联/传递）
+
+### 经验管理
+- ✅ 即时记录机制（troubleshooting-drafts.md → troubleshooting.md）
+- ✅ 知识库 + grep 混合检索策略
+- ✅ .gitignore 忽略临时文件
 
 ---
 
@@ -239,6 +305,7 @@ python scripts/rag_cli.py view
 | `add_documents.py` | 添加文档到知识库 | ⭐⭐⭐⭐⭐ |
 | `check_knowledge_base.py` | 检查知识库状态 | ⭐⭐⭐⭐⭐ |
 | `clean_then_reload.py` | 清理并重新加载知识库 | ⭐⭐⭐⭐ |
+| `import.py` | 统一文档导入（chunks+entities+relations） | ⭐⭐⭐⭐⭐ |
 | `import_novel_chapters.py` | 导入小说章节 | ⭐⭐⭐⭐⭐ |
 | `rag_cli.py` | RAG CLI 工具 | ⭐⭐⭐⭐⭐ |
 | `rag_server.py` | RAG 服务器 | ⭐⭐⭐⭐⭐ |
@@ -281,6 +348,24 @@ python scripts/rag_cli.py view
 
 ## 📝 更新日志
 
+### 2026-08-02 - 知识图谱增强 + 批量关系抽取集成 + Web 功能完善
+- ✅ 修复知识图谱渲染问题（Canvas 节点未创建）
+- ✅ 添加力导布局（基于连接数的节点大小和初始位置）
+- ✅ 修复节点访问错误（检查节点存在性）
+- ✅ 集成批量关系抽取到 `import.py`（Step 2+3+4 自动抽取关系）
+- ✅ 修改 `batch_extract_relations.py` 支持 chunks 参数
+- ✅ Web 批量导入关系增强（自动创建缺失实体）
+- ✅ LLM 精炼状态显示（已精炼/未精炼/无实体，带图标和统计）
+- ✅ 知识图谱详情面板自动关闭（点击空白区域/切换面板/删除实体）
+- ✅ 创建文档：`RELATION_EXTRACTION_INTEGRATION.md`、`WEB_RELATION_IMPORT_ENHANCEMENT.md`、`LLM_REFINE_STATUS_DISPLAY.md`、`GRAPH_DETAIL_PANEL_AUTO_CLOSE.md`
+
+### 2026-07-31 - 知识图谱修复 + 即时记录机制 + 知识库检索优化
+- ✅ 修复知识图谱 JS 错误（connectedChk、showConnected 重复声明、reloadGraphData 未定义）
+- ✅ 在 AGENTS.md 中增加"即时记录机制"（troubleshooting-drafts.md → troubleshooting.md）
+- ✅ 经验检索策略优化：优先用 search_knowledge_base（top_k=5）→ 失败再 grep
+- ✅ 新增 troubleshooting.md 问题 39（JavaScript 重复声明 SyntaxError）
+- ✅ .gitignore 忽略临时文件
+
 ### 2026-07-26 - libsql 迁移完成
 - ✅ 创建 `vector_store_libsql.py` — libsql 向量存储管理器
 - ✅ 创建 `wiki_db_libsql.py` — libsql Wiki 数据库
@@ -313,5 +398,5 @@ python scripts/rag_cli.py view
 
 ---
 
-**项目状态**：✅ 运行正常（libsql 统一存储）
-**最后维护**：2026-07-26
+**项目状态**：✅ 运行正常（libsql 统一存储 + Wiki Manager Web + 知识库检索 + 批量关系抽取 + 知识图谱可视化）
+**最后维护**：2026-08-02

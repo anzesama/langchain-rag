@@ -138,7 +138,7 @@ class AutoSearchImporter:
 
     def import_to_chromadb(self, query: str, parsed: list) -> int:
         """
-        导入到 ChromaDB
+        导入到 libsql 向量库（替代 ChromaDB）
 
         Args:
             query: 搜索关键词
@@ -147,11 +147,10 @@ class AutoSearchImporter:
         Returns:
             导入的数量
         """
-        logger.info(f"[ChromaDB] 开始导入搜索结果")
+        logger.info(f"[VectorStore] 开始导入搜索结果")
 
-        # 创建临时目录存放搜索结果文件
-        search_dir = self.results_dir / f"temp_search_{query.replace(' ', '_')}"
-        search_dir.mkdir(exist_ok=True)
+        from rag_core.vector_store_libsql import VectorStoreManager
+        vector_store = VectorStoreManager()
 
         imported = 0
 
@@ -160,24 +159,27 @@ class AutoSearchImporter:
                 # 构建文档内容
                 content = f"{item['title']}\n\n{item['content']}\n\n来源: {item['source']}\n链接: {item['url']}"
 
-                # 保存为文件
-                filename = f"search_result_{imported}.txt"
-                filepath = search_dir / filename
+                # 构建文档对象
+                doc = Document(
+                    page_content=content,
+                    metadata={
+                        "type": "search_result",
+                        "title": item['title'],
+                        "source": item['source'],
+                        "url": item['url'],
+                        "query": query
+                    }
+                )
 
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(content)
-
-                # 使用 add_directory 导入
-                added = self.kb.add_directory(directory=search_dir)
-
-                if added > 0:
-                    imported = added
-                    logger.info(f"  导入: {item['title']} (共 {added} 个文件)")
+                # 直接添加到向量库
+                vector_store.add_documents([doc])
+                imported += 1
+                logger.info(f"  导入: {item['title']}")
 
             except Exception as e:
                 logger.error(f"  导入失败: {item['title']} - {e}")
 
-        logger.info(f"[ChromaDB] 导入完成，共 {imported} 个文件")
+        logger.info(f"[VectorStore] 导入完成，共 {imported} 个文件")
         return imported
 
     def import_to_wiki(self, query: str, parsed: list) -> int:
@@ -303,7 +305,7 @@ class AutoSearchImporter:
         logger.info(f"查询: {query}")
         logger.info(f"搜索源: {sources or '所有'}")
         logger.info(f"解析结果: {len(parsed)} 条")
-        logger.info(f"ChromaDB 导入: {chromadb_count} 条")
+        logger.info(f"libsql 导入: {chromadb_count} 条")
         logger.info(f"Wiki 处理: {wiki_count} 条")
         logger.info(f"耗时: {duration:.2f} 秒")
         logger.info(f"结果文件: {filepath}")

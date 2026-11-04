@@ -1,7 +1,7 @@
 # 知识库架构状态报告
 
-**时间**: 2026-07-26  
-**状态**: ✅ libsql 统一存储 + LSH 优先检索 + 因果排序 + 断点续传
+**时间**: 2026-07-31  
+**状态**: ✅ libsql 统一存储 + LSH 优先检索 + Wiki Manager Web + 知识库检索
 
 ---
 
@@ -78,6 +78,9 @@ LLM 生成回答
 | **父子索引构建** | `parent_index_builder.py` | ✅ 完成 | 后台异步构建父子索引 |
 | **CLI 工具** | `rag_cli.py` | ✅ 更新 | novel 子命令 + rebuild 参数 |
 | **Wiki CLI** | `wiki_cli.py` | ✅ 完成 | Wiki 管理 CLI |
+| **批量关系抽取** | `batch_extract_relations.py` | ✅ 完成 | CLI/Web 批量抽取关系 |
+| **Web 知识图谱** | `wiki_manager_web.py` | ✅ 完成 | Canvas 力导向图谱 + 详情面板 |
+| **LLM 精炼** | `wiki_manager_web.py` | ✅ 完成 | 实体精筛 + 关系提取 + 精炼状态显示 |
 | **配置** | `rag_config.py` | ✅ 更新 | libsql 路径、LSH 路径、召回阈值、架构开关 |
 | **迁移脚本** | `migrate_to_libsql.py` | ✅ 完成 | 从 ChromaDB/SQLite 迁移到 libsql |
 | **备份脚本** | `backup_before_migration.py` | ✅ 完成 | 迁移前完整备份 |
@@ -137,7 +140,22 @@ LLM 生成回答
 - **原因**: sentence-transformers 模型首次加载需要时间
 - **解决**: 使用 `rag_cli.py preload` 预下载模型
 
+### 3. 知识图谱节点渲染问题（已修复）
+- **错误**: `Cannot read properties of undefined (reading 'x')`
+- **原因**: `graphPositions` 数组未正确创建节点
+- **解决**: 添加节点位置创建逻辑（基于连接数计算大小和初始位置）
+
+### 4. Web 批量导入关系失败（已修复）
+- **错误**: LLM 返回的实体不存在时导入失败
+- **原因**: 没有自动创建缺失实体
+- **解决**: 在 `batch_import_relations` 中添加实体自动创建逻辑
+
+### 5. 知识图谱详情面板不自动关闭（已修复）
+- **现象**: 点击空白区域/切换面板/删除实体后详情面板不关闭
+- **原因**: 缺少 `closeDetailPanel` 函数和事件处理
+- **解决**: 添加 `closeDetailPanel` 函数，在点击空白区域/切换面板/删除实体后调用
+
 ---
 
-**报告生成时间**: 2026-07-03  
-**下次更新**: 完成《蛊真人》全量加载后
+**报告生成时间**: 2026-08-02  
+**下次更新**: 完成全量关系抽取和精炼优化后

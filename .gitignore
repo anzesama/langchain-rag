@@ -19,6 +19,16 @@ ml_env/
 .vscode/
 .idea/
 
+# Temp
+documents/uploaded/
+documents/_github_search/
+documents/_reports/
+documents/_uploads/
+scripts/storage/
+troubleshooting-drafts.md
+js_code.txt
+nul
+
 # pi coding agent
 .pi/
 *.swp
@@ -28,19 +38,18 @@ ml_env/
 # Jupyter Notebook
 .ipynb_checkpoints/
 
-# Database
+# Database (runtime artifacts — never commit)
 *.db
 *.sqlite
 *.sqlite3
 *.db-journal
 
-# Data
-data/
-storage/knowledge_base/
-storage/chroma_db/
-storage/lsh_index/*.faiss
-storage/lsh_index/*.pkl
-storage/global_counter.json
+# Storage (全部为运行时产物：db / LSH 索引 / id_map / 计数 / 进度)
+# ⚠️ 曾因跟踪 118MB 大库，导致 git stash/checkout 静默替换生产数据（2026-11-03 事故）
+storage/
+
+# 临时脚本/文件
+_tmp_*
 
 # Logs
 *.log
@@ -53,7 +62,6 @@ logs/
 # Temporary files
 *.tmp
 *.temp
-nul
 tmp_*.txt
 tmp_*.log
 
@@ -66,16 +74,14 @@ Thumbs.db
 .coverage
 htmlcov/
 
-# Node modules (already excluded by node_modules/.gitkeep)
+# Node stuff
 node_modules/
 
-# Archives
-archive/
+# === 统一归档目录 (所有归档在这里) ===
+/archive/
 
 # Paddle
-*.pdparams
-*.pdopt
-*.pdiparams
-*.pdmodel
-*.pdiparams.info
-*.pdzip
+*.pdparams *.pdopt *.pdiparams *.pdmodel *.pdiparams.info *.pdzip
+
+# Weird dir
+${APPDATA}/

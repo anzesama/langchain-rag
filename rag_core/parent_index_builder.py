@@ -17,7 +17,41 @@ from langchain_core.documents import Document
 
 from rag_config import logger
 from rag_core.document_loader import load_document, RecursiveCharacterTextSplitter
-from rag_core.parent_document_retriever import ParentDocumentRetriever, VectorStoreWithParentRetriever
+from rag_core.parent_document_retriever import ParentDocumentRetriever
+from rag_core.vector_store_libsql import VectorStoreManager
+from langchain_core.documents import Document
+
+
+class VectorStoreWithParentRetriever:
+    """
+    父子向量存储（简化版，用于索引构建）
+    """
+    
+    def __init__(self, persist_dir: str, embedding_model: str, embedding_device: str):
+        self.persist_dir = Path(persist_dir)
+        self.persist_dir.mkdir(parents=True, exist_ok=True)
+        self.vector_store = VectorStoreManager()
+        self.embedding_model = embedding_model
+        self.embedding_device = embedding_device
+    
+    def add_chapter(self, text: str, chapter_id: str, chapter_num: int):
+        """
+        添加父块（章节）
+        
+        Args:
+            text: 章节文本
+            chapter_id: 章节 ID
+            chapter_num: 章节编号
+        """
+        doc = Document(
+            page_content=text,
+            metadata={
+                "type": "parent",
+                "chapter_id": chapter_id,
+                "chapter_num": chapter_num
+            }
+        )
+        self.vector_store.add_documents([doc])
 
 
 class ParentIndexBuilder:

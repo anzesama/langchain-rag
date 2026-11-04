@@ -1,0 +1,446 @@
+"""
+LLM 精炼模块 — 精筛 jieba 实体 + 关系提取 + 领域分类系统
+
+用法:
+    refiner = LLMRefiner(endpoint, api_key, model, domain='machine-learning')
+    result = refiner.refine_entities(entities, chunks)   # 精筛实体
+    result = refiner.extract_relations(chunks, entities)  # 提取关系
+"""
+import json
+import re
+import time
+from typing import Dict, List, Any
+
+import requests
+
+from rag_config import logger
+
+
+DOMAIN_CONFIGS = {
+    'machine-learning': {
+        'label': '机器学习/数据科学',
+        'entity_types': ['算法', '模型', '方法', '概念', '指标', '工具', '框架', '数据集'],
+        'rel_types': ['使用', '基于', '对比', '包含', '实现', '改进', '防止', '优化', '定义', '关联'],
+        'entity_review_rules': '关键词型术语，2-20字，不能是描述句或句子片段',
+        'relation_check': 'source/target 在实体列表中，关系在上下文中明确出现',
+    },
+    'novel': {
+        'label': '小说/剧情',
+        'entity_types': ['人物', '蛊虫', '势力', '流派', '地点', '境界', '法宝'],
+        'rel_types': ['持有', '属于', '主修', '师承', '盟友', '敌对', '击杀', '使用', '控制'],
+        'entity_review_rules': '小说命名实体，2-8汉字，不能含英文/数字，必须是有意义的角色或概念',
+        'rel_check': 'source/target 在实体列表中，关系在剧情中明确出现',
+    },
+    'ontology': {
+        'label': '技术概念本体',
+        'entity_types': ['概念', '属性', '实例', '关系', '约束', '公理'],
+        'rel_types': ['is-a', 'has-part', 'instance-of', 'related-to', 'constrained-by'],
+        'entity_review_rules': '概念型术语，不应含数字或特例，必须抽象',
+        'rel_check': 'source/target 在实体列表中，本体论约束',
+    },
+}
+
+
+
+
+# ============================================================
+# 预过滤工具函数
+# ============================================================
+
+def prefilter_entities(entities: List[Dict], chunks_text: str, max_count: int = 150) -> List[Dict]:
+    """
+    4级优先级预过滤：减少发给 LLM 的实体数量
+    优先级: 0=核心类型 > 1=文档-word ™ chunks > 2=regex ™ chunks > 3=regex 未命中
+    """
+    stopwords = {'本文', '该书', '我们', '它们', '其中', '以下', '例如', '对于', '可以', '进行', '一个', '不是', '已经'}
+    core_types = {'算法', '模型', '框架', '工具', '指标', '概念'}
+    candidates = []
+    for e in entities:
+        name = e.get('name', '').strip()
+        if not name or len(name) < 2 or len(name) > 20:
+            continue
+        if name in stopwords:
+            continue
+        in_chunks = name in chunks_text
+        is_regex = e.get('source_chapter') == 'regex'
+        is_core = e.get('type') in core_types
+
+        if is_core:
+            priority = 0
+        elif not is_regex and in_chunks:
+            priority = 1
+        elif is_regex and in_chunks:
+            priority = 2
+        else:
+            priority = 3
+        candidates.append((priority, len(name), e))
+
+    candidates.sort(key=lambda x: (x[0], x[1]))
+    return [e for _, _, e in candidates[:max_count]]
+
+
+def build_combined_prompt(chunks_text: str, entities: List[Dict]) -> str:
+    """构建合并 Prompt：同时精筛实体 + 提取关系"""
+    entity_items = [{"id": e.get("id", ""), "name": e.get("name", ""), "type": e.get("type", "未知")} for e in entities]
+    entities_json = json.dumps(entity_items, ensure_ascii=False, indent=2)
+    return f"""你是一个知识图谱构建专家。给定一段原文和候选实体列表，请完成两项任务：
+
+## 任务1：实体筛选与分类
+判断每个实体是否有效（技术概念/算法/工具/指标/方法/框架/数据集/人物等），为有效实体推荐类型。
+无效实体需标记删除（完整句子、单字、泛指词、含标点符号的短语等）。
+
+## 任务2：关系抽取
+在**有效的实体**之间提取语义关系。
+- 只提取原文中明确陈述的关系
+- 关系类型从以下选择：使用、对比、改进、属于、开发、评估、包含、提出、适用、关联
+- 每条关系必须附上一句原文作为证据（不超过30字）
+
+## 输入
+### 原文片段
+{chunks_text[:6000]}
+
+### 候选实体列表（已过滤）
+{entities_json}
+
+## 输出格式（严格JSON）
+{{
+  "valid": [{{"id": "实体ID", "name": "实体名称", "recommended_type": "类型"}}],
+  "removed": [{{"id": "实体ID", "name": "实体名称"}}],
+  "relations": [
+    {{"source": "实体A名称", "target": "实体B名称", "rel_type": "关系类型", "evidence": "原文依据"}}
+  ]
+}}
+只返回JSON，不要任何解释、思考过程、markdown标记。直接输出：{{"valid":[...]}}"""
+
+
+class LLMRefiner:
+    """LLM 精炼实体 + 提取关系"""
+
+    def __init__(self, endpoint: str, api_key: str, model: str, domain: str = 'machine-learning'):
+        self.endpoint = endpoint.rstrip('/')
+        self.api_key = api_key
+        self.model = model
+        self.domain = domain
+        self.config = DOMAIN_CONFIGS.get(domain, DOMAIN_CONFIGS['machine-learning'])
+
+    # 预处理：规则过滤明显垃圾实体（减少 LLM 负担）
+    NOISE_PATTERNS = [
+        (r'^.{0,1}$', '单字'),  # 零字或单字
+        (r'^[0-9\s\.\-_]+$', '纯数字符号'),
+        (r'^get$|^set$|^the$|^and$|^for$|^not$|^has$|^new$|^int$|^def$|^let$|^var$|^try$|^end$|^nil$|^use$|^add$', '无意义英文单词'),
+        (r'^df$|^pd$|^np$|^os$|^id$', 'Python 缩写'),
+        (r'^col$|^ord$|^fold$|^Hot$|^train$|^import$', '代码片段 / 英文碎片'),
+        (r'^import|^from\s|^print\(', '代码行'),
+        (r'^[a-zA-Z]{1,3}$', '极短英文'),
+        (r'^[:,：，\-\{\}\[\]\|\\/#&*+~^@%!=<>]+$', '纯符号'),
+    ]
+    WEAK_NAMES = {'time', 'day', 'year', 'data', 'text', 'file', 'key', 'sum', 'val', 'num',
+                  'idx', 'sql', 'csv', 'http', 'url', 'img', 'img', 'usr', 'dev','db',
+                  'config', 'test', 'case', 'max', 'min', 'set', 'get', 'opt', 'item',
+                  'list', 'dict', 'cat', 'dog', 'type', 'model', 'method', 'calc',
+                  'score', 'valid', 'step'}
+
+    def _prefilter(self, entities: list) -> tuple:
+        """返回 (valid_entities, removed_entities)"""
+        import re
+        valid, removed = [], []
+        for e in entities:
+            name = e.get('name', '').strip()
+            # 过短/过长
+            if len(name) < 2 or len(name) > 20:
+                removed.append(e); continue
+            # 纯符号/数字
+            if re.match(r'^[0-9\W_]+$', name):
+                removed.append(e); continue
+            # 包含标点（除非是合理的书名/术语）
+            if re.search(r'[，。、；：！？【】《》（）\-\*]', name):
+                removed.append(e); continue
+            # 英文弱词
+            if len(name) <= 3 and name.lower() in self.WEAK_NAMES:
+                removed.append(e); continue
+            # 规则匹配
+            matched = False
+            for pat, _reason in self.NOISE_PATTERNS:
+                if re.search(pat, name):
+                    removed.append(e); matched = True; break
+            if matched: continue
+            # 包含虚词（大多数句子）
+            if len(name) > 8 and re.search('[\u7684\u4e86\u5728\u662f\u8457\u300d\u300f]', name):
+                removed.append(e); continue
+            valid.append(e)
+        return valid, removed
+
+    def _build_refine_prompt(self, entities: list, chunks: list) -> str:
+        """构建精筛实体 prompt（含 id + name + 类型 + 严格标准 + few-shot）"""
+        import json as _json
+        entity_items = [
+            {"id": e.get('id', ''), "name": e.get('name', ''),
+             "type": e.get('type', '未分类')}
+            for e in entities
+        ]
+        entity_json = _json.dumps(entity_items, ensure_ascii=False, indent=2)
+
+        chunk_text = '\n'.join(
+            f"[Chunk {i}] {c.get('chunk_text', c.get('page_content', ''))[:300]}"
+            for i, c in enumerate(chunks[:3])
+        ) if chunks else '(无上下文)'
+
+        config = self.config
+        return f"""你是一个知识图谱实体清洗专家。对给定的候选实体进行筛选和分类。
+
+## 输入说明
+每个实体包含：id（唯一标识）、name（名称）、type（当前类型）。
+同时附原文片段供参考。
+
+## 判断规则
+1. **删除（标为 removed）** 如果实体：
+   - 是完整句子（长度>20字且含"的/了/在/是/和/与"等虚词）
+   - 单字或无意义词（如"机""文""本"）
+   - 包含中文/英文标点
+   - 纯数字/纯符号
+   - 指代性泛词（"本文""该书""我们""它们"）
+   - 代码片段（含 `。`/`。py`/`def。`/`class。`）
+   - 2-3 字无意义英文缩写（df/pd/np/os/id/col/val/max/min/Hot/train/import/valid/fold）
+   - 在原文末出现或原文中仅作为普通词语
+
+2. **保留并分类（valid）** 如果实体：
+   - 是专有名词（算法名/工具名/指标名/概念名等）
+   - 在原文中出现并有独立语义
+   - 长度 2-20 字
+
+3. **分类标签（recommended_type 之一）**：
+   {', '.join(config['entity_types'])}
+
+## 示例
+输入：[{{"id":"e1","name":"随机森林"}},{{"id":"e2","name":"本文对机器学习进行了介绍"}},{{"id":"e3","name":"机"}}]
+输出：{{"valid":[{{"id":"e1","name":"随机森林","recommended_type":"算法"}}],"removed":[{{"id":"e2","name":"本文对机器学习进行了介绍"}},{{"id":"e3","name":"机"}}]}}
+
+## 实体列表
+{entity_json}
+
+## 上下文
+{chunk_text}
+
+只返回 JSON，格式：{{"valid":[{{"id":"...","name":"...","recommended_type":"..."}}],"removed":[{{"id":"...","name":"..."}}]}}"""
+
+    def _build_relation_prompt(self, chunks: list, entities: list) -> str:
+        """构建关系提取 prompt — 限制 chunk 数量防止超 token"""
+        import json as _json
+        MAX_CHUNKS = 10
+        selected = chunks[:MAX_CHUNKS] if len(chunks) > MAX_CHUNKS else chunks
+        chunk_text = '\n'.join(
+            f"[Chunk {i}] {c.get('chunk_text', c.get('page_content', ''))[:200]}"
+            for i, c in enumerate(selected)
+        )
+        entity_names = [e['name'] for e in entities if e.get('name') and len(e['name'].strip()) >= 2]
+        entity_list = ', '.join(entity_names[:50])  # 限制
+
+        config = self.config
+        rel_types_str = ', '.join(config['rel_types'])
+        return ("你是一个知识图谱关系抽取专家。从给定的文本片段中提取实体之间的语义关系。\n\n"
+            "## 输入说明\n"
+            "1. 一段或多段原文片段\n"
+            "2. 已知实体列表（供参考，但也可以从原文中提取不在列表中的实体）\n\n"
+            "## 提取规则\n"
+            "1. **只提取文本中明确陈述的关系**，不要推测或编造。\n"
+            "2. 优先使用已知实体列表中的实体，但也可从原文中提取不在列表中的实体。\n"
+            f"3. 关系类型从以下选择：{rel_types_str}\n"
+            "4. 每条关系格式：{\"source\": \"实体A\", \"target\": \"实体B\", \"type\": \"关系类型\", \"evidence\": \"原文依据\"}\n\n"
+            "## 示例\n"
+            "原文：XGBoost 常用于分类任务，其性能优于逻辑回归。\n"
+            "实体：XGBoost, 分类, 逻辑回归\n"
+            '输出：\n'
+            '{\"relations\": [\n'
+            '  {\"source\": \"XGBoost\", \"target\": \"分类\", \"type\": \"适用\", \"evidence\": \"XGBoost常用于分类任务\"},\n'
+            '  {\"source\": \"XGBoost\", \"target\": \"逻辑回归\", \"type\": \"对比\", \"evidence\": \"其性能优于逻辑回归\"}\n'
+            ']}\n\n'
+            "## 原文片段\n"
+            f"{chunk_text}\n\n"
+            "## 已知实体\n"
+            f"{entity_list}\n\n"
+            '返回 JSON（只返回 JSON）：{\"relations\": [{\"source\": \"...\", \"target\": \"...\", \"type\": \"...\", \"evidence\": \"...\"}]}')
+
+    def _call_api(self, messages: list, temperature: float = 0.1, max_tokens: int = 1500) -> str:
+        """调用 OpenAI-compatible API"""
+        url = f"{self.endpoint}/chat/completions"
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    url,
+                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=120,
+                )
+                if resp.status_code == 429:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"].strip()
+            except requests.exceptions.Timeout:
+                if attempt == 2:
+                    raise
+                time.sleep(2)
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(1)
+        raise RuntimeError("LLM API 调用失败: 三次重试均已用完")
+
+    def _parse_json(self, text: str) -> dict:
+        """解析 LLM 返回的 JSON"""
+        if not text or not text.strip():
+            logger.warning(f"_parse_json: 空响应")
+            return {"relations": []}
+        
+        content = text
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        
+        # 尝试找到 JSON 对象
+        start = content.find('{')
+        end = content.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            content = content[start:end+1]
+        
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            logger.warning(f"_parse_json: JSON解析失败 - {e}, 内容: {content[:200]}")
+            return {"relations": []}
+
+    def refine_entities(self, entities: list, chunks: list) -> dict:
+        """
+        精筛实体列表 — 规则预过滤 + LLM 审核（分批，每批最多 60 个）
+
+        Returns:
+            {entities: [...], removed: [...], suggestions: [...]}
+        """
+        if not entities:
+            return {"entities": entities, "removed": [], "suggestions": []}
+
+        # 规则预过滤：先删明显垃圾
+        valid_entities, pre_removed = self._prefilter(entities)
+        logger.info(f"规则预过滤: {len(entities)}→{len(valid_entities)} (删除{len(pre_removed)})")
+
+        BATCH_SIZE = 40  # 减少每批数量让 LLM 更精准
+        all_refined = []
+        all_removed = list(pre_removed)  # 规则过滤的算删除
+        all_suggestions = []
+
+        for batch_start in range(0, len(valid_entities), BATCH_SIZE):
+            batch = valid_entities[batch_start:batch_start + BATCH_SIZE]
+            # 建立 id→entity 索引
+            id_entity = {e.get('id', ''): e for e in batch if e.get('id')}
+            try:
+                prompt = self._build_refine_prompt(batch, chunks)
+                raw = self._call_api([
+                    {"role": "system", "content": "你是知识图谱审核专家，只返回 JSON 格式的结果，不包含解释文字。"},
+                    {"role": "user", "content": prompt},
+                ])
+                result = self._parse_json(raw)
+
+                # LLM 返回 valid/removed（可能用 valid/removed 或 valid/invalid）
+                valid_items = result.get('valid', result.get('valid_items', []))
+                removed_items = result.get('removed', result.get('removed_items', result.get('invalid', [])))
+
+                removed_ids = set()
+                type_updates = {}  # id → type
+                for item in removed_items:
+                    eid = item.get('id', '').strip()
+                    ename = item.get('name', '').strip()
+                    if eid:
+                        removed_ids.add(eid)
+                    elif ename:
+                        # fallback: name → find id
+                        for e in batch:
+                            if e.get('name') == ename:
+                                removed_ids.add(e.get('id', ''))
+                                break
+
+                for item in valid_items:
+                    eid = item.get('id', '').strip()
+                    rtype = item.get('recommended_type', '').strip()
+                    if eid and rtype:
+                        type_updates[eid] = rtype
+                    elif item.get('name') and rtype:
+                        for e in batch:
+                            if e.get('name') == item.get('name'):
+                                type_updates[e.get('id', '')] = rtype
+                                break
+
+                for e in batch:
+                    eid = e.get('id', '')
+                    if eid in removed_ids:
+                        all_removed.append(e)
+                    else:
+                        if eid in type_updates:
+                            e['type'] = type_updates[eid]
+                        all_refined.append(e)
+
+                if result.get('suggestions'):
+                    all_suggestions.append(str(result['suggestions']))
+
+            except Exception as e:
+                logger.warning(f"批次精筛失败 (offset={batch_start}): {e}")
+                all_refined.extend(batch)  # 失败时整批保留
+
+        logger.info(f"LLM 精筛: {len(entities)}→{len(all_refined)} (规则删{len(pre_removed)}, LLM删{len(all_removed)-len(pre_removed)})")
+        return {"entities": all_refined, "removed": all_removed, "suggestions": all_suggestions}
+
+    def extract_relations(self, chunks: list, entities: list) -> dict:
+        """
+        提取实体间关系 — 发送给 LLM 提取
+
+        Returns:
+            {"relations": [{source, target, type, reason}], "count": N}
+        """
+        if not entities or not chunks:
+            return {"relations": [], "count": 0}
+
+        try:
+            prompt = self._build_relation_prompt(chunks, entities)
+            raw = self._call_api([
+                {"role": "system", "content": "你是知识图谱关系提取专家，只返回 JSON 格式的结果。"},
+                {"role": "user", "content": prompt},
+            ])
+            result = self._parse_json(raw)
+            relations = result.get('relations', [])
+
+            # 基本过滤：source/target 非空且不是垃圾单词
+            weak = {'the','a','an','is','it','data','text','code','file','value','test','type','key','list','item'}
+            valid = []
+            seen = set()
+            for r in relations:
+                src = r.get('source', '').strip()
+                tgt = r.get('target', '').strip()
+                tp = r.get('type', '').strip()
+                if not src or not tgt or not tp:
+                    continue
+                if len(src) < 2 or len(tgt) < 2 or len(src) > 30 or len(tgt) > 30:
+                    continue
+                if src.lower() in weak or tgt.lower() in weak:
+                    continue
+                # 去重
+                key = (src, tgt, tp)
+                if key in seen:
+                    continue
+                seen.add(key)
+                valid.append({'source': src, 'target': tgt, 'type': tp, 'evidence': r.get('evidence', '')})
+
+            logger.info(f"[LLM 关系提取]: {len(valid)}/{len(relations)} 有效（去重后）")
+            return {"relations": valid, "count": len(valid)}
+
+        except Exception as e:
+            logger.warning(f"LLM 关系提取失败: {e}")
+            return {"relations": [], "count": 0, "error": str(e)}

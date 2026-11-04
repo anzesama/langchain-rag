@@ -16,6 +16,7 @@ import uuid
 import asyncio
 import shutil
 import hashlib
+import threading
 from pathlib import Path
 from datetime import datetime
 from enum import Enum
@@ -28,6 +29,7 @@ os.environ["POSTHOG_JS_OFF"] = "1"
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, BackgroundTasks
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -122,6 +124,86 @@ def get_kb() -> KnowledgeBase:
     return _kb
 
 
+# ==================== 闲置 / 内存感知看门狗 ====================
+# 让服务"不用就退"：闲置超时或内存紧张时自动退出，释放 ~1.2GB。
+# 配置来自环境变量（由 scripts/start_rag_server.ps1 注入）。
+
+from rag_core.idle_watchdog import IdleWatchdog
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+IDLE_TIMEOUT_SEC = _env_int("RAG_IDLE_TIMEOUT_SEC", 300)
+MEM_IDLE_SEC     = _env_int("RAG_MEM_IDLE_SEC", 60)
+MEM_MIN_MB       = _env_int("RAG_MEM_MIN_MB", 400)
+WATCHDOG_SEC     = _env_int("RAG_WATCHDOG_SEC", 30)
+
+_watchdog = None
+
+
+def get_watchdog() -> IdleWatchdog:
+    global _watchdog
+    if _watchdog is None:
+        _watchdog = IdleWatchdog(
+            idle_timeout_sec=IDLE_TIMEOUT_SEC,
+            mem_idle_sec=MEM_IDLE_SEC,
+            mem_min_mb=MEM_MIN_MB,
+        )
+    return _watchdog
+
+
+def graceful_shutdown(reason: str = "manual") -> None:
+    """优雅退出：尽量 flush，写日志，然后硬退出（避免 uvicorn 卡住）"""
+    try:
+        kb = get_kb()
+        flush = getattr(kb, "flush", None)
+        if callable(flush):
+            flush()
+    except Exception as e:
+        logger.error(f"flush 失败: {type(e).__name__}: {e}")
+    logger.warning(f"🛑 RAG 服务退出 (原因: {reason})")
+    try:
+        import logging as _logging
+        _logging.shutdown()  # 冲刷日志 handler
+    except Exception:
+        pass
+    os._exit(0)
+
+
+def _watchdog_loop() -> None:
+    """后台线程：每 WATCHDOG_SEC 检查一次是否该退出"""
+    import time as _time
+    while True:
+        _time.sleep(max(1, WATCHDOG_SEC))
+        try:
+            reason = get_watchdog().run_once()
+        except Exception as e:
+            logger.error(f"看门狗异常: {type(e).__name__}: {e}")
+            continue
+        if reason:
+            try:
+                idle = get_watchdog().idle_sec()
+            except Exception:
+                idle = -1
+            logger.warning(f"看门狗触发 ({reason}, idle={idle:.0f}s) — 正在退出")
+            graceful_shutdown(reason)
+
+
+@app.middleware("http")
+async def _touch_watchdog(request, call_next):
+    """任何请求都重置闲置计时（滑动窗口）"""
+    try:
+        get_watchdog().touch()
+    except Exception:
+        pass
+    return await call_next(request)
+
+
 # ==================== 请求/响应模型 ====================
 
 class SearchRequest(BaseModel):
@@ -163,12 +245,23 @@ async def health_check():
     }
 
 
-@app.post("/api/search")
-def search(request: SearchRequest):
-    """搜索知识库"""
+@app.get("/api/memories/stats")
+async def memories_stats():
+    """脑启发性记忆层统计（只读）。供观察「知识飞轮」效果。"""
     try:
         kb = get_kb()
-        result = kb.search(request.query, top_k=request.top_k)
+        return await run_in_threadpool(kb.vector_store.get_memories_stats)
+    except Exception as e:
+        logger.error(f"记忆统计失败: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/search")
+async def search(request: SearchRequest):
+    """搜索知识库（含 LLM 生成；LLM 超时自动降级）"""
+    try:
+        kb = get_kb()
+        result = await run_in_threadpool(kb.search, request.query, request.top_k)
         audit_log("SEARCH", "api", f"query='{request.query[:50]}', top_k={request.top_k}")
         return result
     except Exception as e:
@@ -176,10 +269,28 @@ def search(request: SearchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/smart_search")
-def smart_search(request: SearchRequest):
+@app.post("/api/search_raw")
+async def search_raw(request: SearchRequest):
+    """纯检索：不生成答案，直接返回文档片段（<1s）。供 pi agent 使用。"""
+    try:
+        kb = get_kb()
+        chunks = await run_in_threadpool(
+            kb.search_raw, request.query, request.top_k
+        )
+        audit_log(
+            "SEARCH_RAW",
+            "api",
+            f"query='{request.query[:50]}', top_k={request.top_k}",
+        )
+        return {"query": request.query, "sources": chunks}
+    except Exception as e:
+        logger.error(f"检索失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _smart_search_sync(request: SearchRequest):
     """
-    智能搜索 - 知识库检索 + 网络采集双通道
+    智能搜索（同步实现） - 知识库检索 + 网络采集双通道
     
     流程：
     1. 先搜索知识库
@@ -278,6 +389,12 @@ def smart_search(request: SearchRequest):
     except Exception as e:
         logger.error(f"智能搜索失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/smart_search")
+async def smart_search(request: SearchRequest):
+    """智能搜索（async 包装：整体丢线程池，避免 subprocess.run 阻塞 event loop）"""
+    return await run_in_threadpool(_smart_search_sync, request)
 
 
 @app.post("/api/upload", response_model=UploadResult)
@@ -564,6 +681,13 @@ async def delete_document(doc_id: str):
     return {"deleted": True, "document_id": found_id, "filename": info["filename"]}
 
 
+@app.post("/api/shutdown")
+async def shutdown():
+    """手动停止服务（延迟 0.2s 退出，保证响应先送达）"""
+    threading.Timer(0.2, lambda: graceful_shutdown("manual")).start()
+    return {"shutting_down": True, "reason": "manual"}
+
+
 @app.post("/api/rebuild")
 async def rebuild():
     """重建知识库（全量重新导入）"""
@@ -595,7 +719,17 @@ def run_server():
     
     logger.info(f"📡 启动 RAG 服务: http://{RAG_SERVER_HOST}:{RAG_SERVER_PORT}")
     logger.info(f"📖 API 文档: http://localhost:{RAG_SERVER_PORT}/docs")
-    
+
+    # 闲置/内存感知看门狗
+    if get_watchdog().enabled:
+        threading.Thread(target=_watchdog_loop, daemon=True, name="idle-watchdog").start()
+        logger.info(
+            f"🐕 看门狗已启动 (闲置>{IDLE_TIMEOUT_SEC}s 或 "
+            f"闲置>{MEM_IDLE_SEC}s且可用内存<{MEM_MIN_MB}MB; 轮询 {WATCHDOG_SEC}s)"
+        )
+    else:
+        logger.info("🐕 看门狗已禁用 (RAG_IDLE_TIMEOUT_SEC=0，服务常驻)")
+
     uvicorn.run(
         app,
         host=RAG_SERVER_HOST,

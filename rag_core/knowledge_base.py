@@ -20,6 +20,8 @@ from rag_core.auto_importer import AutoImportManager
 from rag_core.parent_index_builder import build_parent_index_async
 from rag_core.lsh_index import LSHIndexManager
 from rag_core.resume_loader import ResumeLoader
+from rag_core.graph_retriever import retrieve, to_prompt_context
+from rag_core.parent_document_retriever import ParentDocumentRetriever
 
 
 class KnowledgeBase:
@@ -417,13 +419,17 @@ class KnowledgeBase:
         
         return result
 
-    def search_raw(self, query: str, top_k: int = 5, score_threshold: float = 0.3, source: str = None) -> List[Dict]:
+    # pi 扩展专用：限制单 chunk 和总长度，防止上下文爆炸
+    MAX_CONTENT_PER_CHUNK = 200   # 每个 chunk 最多字符数
+    MAX_TOTAL_CHARS = 1200         # 所有 chunks 总字符数上限
+
+    def search_raw(self, query: str, top_k: int = 3, score_threshold: float = 0.3, source: str = None) -> List[Dict]:
         """
         原始检索（不生成回答，直接返回文档片段）
         
         Args:
             query: 查询文本
-            top_k: 返回数量
+            top_k: 返回数量（默认 3，防止上下文膨胀）
             score_threshold: 相似度阈值
             source: 文档来源（可选）
             
@@ -438,17 +444,62 @@ class KnowledgeBase:
         # 预热 ChromaDB（避免首次搜索慢）
         self._warmup_vector_store()
         
-        # 直接调用 retrieve，不经过 LLM 生成
-        results = self.pipeline.retrieve(query, top_k, score_threshold, source)
+        # 1. 向量检索（原有逻辑）
+        vector_results = self.pipeline.retrieve(query, top_k, score_threshold, source)
         
-        return [
-            {
+        # 2. 图检索（新增）
+        try:
+            from rag_core.graph_retriever import retrieve, to_prompt_context
+            graph_result = retrieve(query, top_k=3, hops=2)
+            graph_context = to_prompt_context(graph_result)
+            
+            # 将图上下文添加到结果中
+            if graph_context:
+                for doc, score in vector_results:
+                    doc.page_content = graph_context + "\n\n" + doc.page_content
+        except Exception as e:
+            logger.warning(f"图检索失败: {e}")
+        
+        # 3. 父子检索（新增）
+        try:
+            from rag_core.parent_document_retriever import ParentDocumentRetriever
+            parent_retriever = ParentDocumentRetriever(vector_store=self.vector_store)
+            parent_results = parent_retriever.retrieve(query, top_k=3)
+            
+            # 合并父子检索结果（将元组转换为 Document 列表）
+            vector_docs = [doc for doc, score in vector_results]
+            parent_docs = parent_results
+            all_results = vector_docs + parent_docs
+            
+            # 去重（基于 content 哈希）
+            seen = set()
+            unique_results = []
+            for doc in all_results:
+                content_hash = hash(doc.page_content)
+                if content_hash not in seen:
+                    seen.add(content_hash)
+                    # 获取 score（从向量库的元数据中）
+                    score = 0.5  # 默认分数
+                    unique_results.append((doc, score))
+            
+            vector_results = unique_results
+        except Exception as e:
+            logger.warning(f"父子检索失败: {e}")
+        
+        # 截断 + 总量控制（防止上下文爆炸）
+        results = []
+        total_chars = 0
+        for doc, score in vector_results:
+            if total_chars >= self.MAX_TOTAL_CHARS:
+                break
+            content = doc.page_content[:self.MAX_CONTENT_PER_CHUNK]
+            results.append({
                 "source": doc.metadata.get("source", "未知"),
-                "content": doc.page_content,
+                "content": content,
                 "score": round(score, 4)
-            }
-            for doc, score in results
-        ]
+            })
+            total_chars += len(content)
+        return results
 
     def list_documents(self) -> List[Dict]:
         """列出所有已入库文档"""

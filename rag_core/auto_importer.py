@@ -173,19 +173,50 @@ class AutoImportManager:
             self._add_to_vector_store(chunks, rel_key)
             logger.info(f"✅ 自动导入: {filepath.name} ({len(chunks)} 个块)")
 
-            # 同步 Wiki 层
+            # 使用 LLMExtractor 提取实体和关系
             try:
-                from rag_core.wiki_updater import WikiUpdater
-                updater = WikiUpdater()
+                from rag_core.llm_extractor import LLMExtractor
+                extractor = LLMExtractor()
                 combined_text = "\n".join([c.page_content for c in chunks])
-                wiki_stats = updater.batch_add_from_text(
-                    text=combined_text,
-                    source_chapter=rel_key,
-                    min_confidence=2
-                )
-                logger.info(f"Wiki 更新: {wiki_stats['entities_added']} 实体, {wiki_stats['relations_added']} 关系")
+                result = extractor.extract_all(combined_text, rel_key)
+                entities_added = 0
+                for entity in result["llm"]:
+                    try:
+                        extractor.wiki_db.add_entity(
+                            name=entity["name"],
+                            entity_type=entity["type"],
+                            properties={"description": entity.get("description", "")},
+                            source_chapter=rel_key
+                        )
+                        entities_added += 1
+                    except Exception as e:
+                        logger.error(f"添加实体失败 {entity['name']}: {e}")
+                # 使用新的返回结构：result["relations"]
+                relations_added = 0
+                for rel in result.get("relations", []):
+                    try:
+                        # 容错处理：检查必要字段是否存在
+                        if not isinstance(rel, dict):
+                            continue
+                        if "source" not in rel or "target" not in rel:
+                            continue
+                        if not rel["source"] or not rel["target"]:
+                            continue
+                        if not rel.get("type"):
+                            rel["type"] = "关联"  # 默认关系类型
+                        extractor.wiki_db.add_relationship(
+                            source_name=rel["source"],
+                            target_name=rel["target"],
+                            rel_type=rel["type"],
+                            properties={"description": rel.get("description", "")},
+                            source_chapter=rel_key
+                        )
+                        relations_added += 1
+                    except Exception as e:
+                        logger.warning(f"添加关系失败 (跳过): {e}")
+                logger.info(f"LLM 导入: {entities_added} 实体, {relations_added} 关系")
             except Exception as e:
-                logger.warning(f"Wiki 更新失败 {filepath}: {e}")
+                logger.warning(f"LLM 提取失败 {filepath}: {e}")
 
             return True
         except Exception as e:

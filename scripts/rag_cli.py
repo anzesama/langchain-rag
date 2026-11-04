@@ -111,12 +111,10 @@ def cmd_add_novel(args):
 # ==================== 自动入库辅助 ====================
 
 def _import_search_to_chromadb(results, query, kb):
-    """将搜索结果自动导入到 ChromaDB"""
-    import tempfile
-    from pathlib import Path
+    """将搜索结果自动导入到 libsql 向量库"""
+    from rag_core.vector_store_libsql import VectorStoreManager
     
-    # 创建临时目录
-    temp_dir = Path(tempfile.mkdtemp(prefix="rag_search_"))
+    vector_store = VectorStoreManager()
     
     imported_count = 0
     
@@ -134,18 +132,24 @@ def _import_search_to_chromadb(results, query, kb):
                 
                 doc_content = f"标题：{title}\n\n{content}\n\n来源：{source_type}\n链接：{url}\n相似度：{score:.4f}"
                 
-                # 保存为临时文件
-                filename = f"{source_type}_{i}.txt"
-                filepath = temp_dir / filename
+                # 构建文档对象
+                doc = Document(
+                    page_content=doc_content,
+                    metadata={
+                        "type": "search_result",
+                        "title": title,
+                        "source": source_type,
+                        "url": url,
+                        "score": score,
+                        "query": query
+                    }
+                )
                 
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(doc_content)
+                # 直接添加到向量库
+                vector_store.add_documents([doc])
+                imported_count += 1
+                print(f"  [OK] {title[:50]}... ({source_type})")
                 
-                # 使用 add_document 导入
-                if kb.add_document(str(filepath)):
-                    imported_count += 1
-                    print(f"  [OK] {title[:50]}... ({source_type})")
-                    
             except Exception as e:
                 print(f"  [WARN] 导入失败: {item.get('title', 'unknown')} - {e}")
     

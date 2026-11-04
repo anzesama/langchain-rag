@@ -1,69 +1,462 @@
-# 阶段复盘：Phase 6 - 文档更新（libsql 迁移）
-- 时间：2026-07-26 02:00
+# 阶段复盘：slo.txt 兼容性修复
+- 时间：2026-08-06
 - 状态：✅ 完成
 
 ## ✅ 做得好的点
-- 全面梳理了所有需要更新的文档，确保信息一致性
-- 使用 edit 工具精确替换，避免破坏已有内容
-- 创建了独立的 Phase 6 总结文档，便于追溯
-- 更新了根目录 README.md 和 docs/ 下所有相关文档
+- 快速识别 `wiki_graph_web.py` 中重复定义的 `load_data` 函数（8 个定义）
+- 使用 `sed` 直接定位问题行号，精确定位需要删除的片段
+- 在修复前先用 `py_compile` 验证语法，确保改动正确
 
-## 📝 实现内容
-
-### 1. 根目录 README.md
-- 更新存储架构说明：libsql + FAISS LSH + ChromaDB（回退）
-- 更新目录结构：新增 libsql 相关文件
-- 更新系统状态：29,000+ chunks，LSH ~0.1ms
-- 添加 2026-07-26 更新日志
-
-### 2. docs/technical/ARCHITECTURE_STATUS.md
-- 新增存储层架构图
-- 更新已实现模块表（含 libsql 向量存储、Wiki DB、迁移脚本）
-- 更新验收状态（添加 libsql 相关项）
-
-### 3. docs/technical/LIBSQL_MIGRATION_GUIDE.md
-- 状态从"待实施"改为"已完成"
-- 新增当前状态表格
-- 保留迁移前准备步骤
-
-### 4. docs/technical/LIBSQL_ROLLBACK_PLAN.md
-- 更新日期和状态
-
-### 5. docs/technical/RAG_UPGRADE_PLAN.md
-- 更新两阶段目标（LSH + libsql）
-- 更新文档更新章节
-
-### 6. docs/project/PROJECT_SUMMARY.md
-- 新增 libsql 统一存储章节
-- 更新章节编号和项目结构
-- 更新验收标准
-
-### 7. docs/project/PROJECT_INDEX.md
-- 更新核心模块列表和存储目录
-- 更新文档导航（含 libsql 文档链接）
-- 更新核心功能列表（13 项）
-
-### 8. docs/project/README.md
-- 添加警告说明区分独立项目
-
-### 9. 新建文档
-- `docs/technical/PHASE6_DOCUMENT_UPDATE_SUMMARY.md` — Phase 6 专项总结
+## 📝 未完成事项
+- 任务 7（统一后端）标记为低优先级，已验证语法正确，可后续优化
 
 ## 🐛 遇到的问题
-无重大问题。所有编辑均一次成功。
+- `wiki_graph_web.py` 有 8 个重复的 `load_data` 函数定义（第 68-172 行），前 7 个是空壳，只有最后一个完整
+- `auto_search_import.py` 使用旧的 `wiki_db` 导入路径，需要改为 `wiki_db_libsql`
+- `wiki_review_web.py` 有残留的 "数据同步" tab，但代码中已注释说明 libsql 架构下无需同步
 
 ## 📦 产出物
-- `README.md` — 更新
-- `docs/technical/ARCHITECTURE_STATUS.md` — 更新
-- `docs/technical/LIBSQL_MIGRATION_GUIDE.md` — 更新
-- `docs/technical/LIBSQL_ROLLBACK_PLAN.md` — 更新
-- `docs/technical/RAG_UPGRADE_PLAN.md` — 更新
-- `docs/project/PROJECT_SUMMARY.md` — 更新
-- `docs/project/PROJECT_INDEX.md` — 更新
-- `docs/project/README.md` — 更新（添加项目区分说明）
-- `docs/technical/PHASE6_DOCUMENT_UPDATE_SUMMARY.md` — 新建
+- `slo_fixes_report.md` — 兼容性修复报告
+- Git 提交：`637dff8`
 
 ## ➡️ 下一步
-- Phase 6 文档更新已完成
-- 如果 libsql 迁移的代码实现（Phase 1-5）也已完成，可进行整体集成测试
-- 考虑清理旧的 ChromaDB/SQLite 数据（迁移验证通过后）
+1. 运行 `python scripts/doc_importer.py` 验证导入流程
+2. 启动 `python scripts/wiki_manager_web.py --open` 验证 Web UI
+3. 测试图谱节点大小是否按连接数差异化显示
+
+---
+
+# 阶段复盘：RAG 软约束自启动 + 闲置/内存感知退出
+- 时间：2026-11-02 03:35
+- 状态：✅ 完成（V1~V7 全部验证通过）
+
+## ✅ 做得好的点
+- 定位到"设计存在但从未生效"的**真正根因是部署漂移**（源码 07-08 版 vs 部署 06-24 版），而非功能没写
+- 全程 TDD：先写 12 个测试（RED）再实现（GREEN），看门狗逻辑抽成纯函数 `should_shutdown`
+- 低内存下用"真实 app/中间件/看门狗 + 跳过 Embedding 预加载"做快速端到端验证（避免 1.2GB 换页抖动）
+- 发现并规避两个环境坑：低内存时 PowerShell 启动卡死；`Get-FileHash` 不可用 → 改 .NET MD5
+- 顺手加了防漂移安装脚本（md5 校验），根治同类问题
+
+## 📝 未完成事项
+- ⚠️ 需用户在 pi 中执行 `/reload` 才能真正加载新扩展（我无法代劳）
+- ⚠️ KB 中 `troubleshooting.md` 快照需再次同步（本次又更新了源文件）
+- ⚠️ 无自动同步机制（troubleshooting.md → KB 仍靠手动）
+
+## 🐛 遇到的问题
+- **部署漂移**：源码更新未部署 → 功能形同虚设（4 层断裂）
+- **测试轮询干扰**：用 `/health` 轮询观测"是否自动退出"，结果轮询本身重置了计时器 → 须完全静默后观测
+- 既有失败 9 个（测试隔离缺陷 / 活体 LLM / 环境缺失），与本改动无关
+
+## 📦 产出物
+- 🆕 `rag_core/idle_watchdog.py` + `tests/test_idle_watchdog.py`（12 tests）
+- 🆕 `scripts/start_rag_server.ps1`（参数化，唯一配置源）
+- 🆕 `scripts/install_rag_extension.ps1`（防漂移，md5 校验）
+- ✏️ `scripts/rag_server_v2.py`（看门狗线程 + `/api/shutdown` + 中间件 touch）
+- ✏️ `rag_extension/pi_rag_tool.ts`（修复路径/python/ps1 + 走 RAG_HOME）
+- ✏️ `~/.pi/agent/extensions/pi_rag_tool.ts`（已部署，md5 一致）
+- ✏️ `README.md`（服务管理章节重写）
+- ✏️ `docs/plans/2026-10-31-rag-autostart-{design,plan}.md`
+
+## 🔬 验收实测
+| 项 | 结果 |
+|---|---|
+| V2 持续请求不退出 | ✅ 16s 轮询全程存活 |
+| VS `POST /api/shutdown` | ✅ 1.0s 退出 |
+| V3 闲置自动退出 | ✅ 15.1s（harness）/ **137s（真实服务 idle>120s）** |
+| V5 `IDLE=0` 常驻 | ✅ 20s 未退出 |
+| V1 ps1 → 真实服务 → 搜索 | ✅ http=200 + 正确答案（LLM 链路通）|
+| V6 安装脚本 | ✅ in sync / deployed 两分支 |
+| V7 测试 | ✅ 新增 12 passed（既有 9 失败无关）|
+| 内存释放 | ✅ 82MB → 575MB（释放 ~500MB）|
+
+## ➡️ 下一步
+- 用户在 pi 执行 `/reload` → 验证 `search_knowledge_base` 自动拉起
+- 建议：写 `sync_kb.ps1` 一键同步 troubleshooting.md 到 KB（并考虑加计划任务）
+
+---
+
+# 阶段复盘：RAG 自动启动快速失败（避免阻塞 pi 主循环）
+- 时间：2026-11-02 12:20
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- 快速定位根因：不是 spawn 失败（`pwsh` 已安装），而是「spawn 成功但冷启动慢 + waitForService 360s 死等 + 未接 AbortSignal」
+- 用 probeShell 前置探测 shell 可用性，避免未来换机没装 `pwsh` 又卡（快速失败）
+- spawn error 纳入 Promise（宽限期 3s），不再静默返回 true（快速失败）
+- `waitForService` 缩短预算到 30s 可配，接 AbortSignal 可中断 sleep（不再傻等到预算耗尽）
+- `ragFetchWithAutoStart` 透传 signal、超时不再二次 spawn（避免重复拉起竞争）
+- 测试零 npm 安装：node 24 原生 strip-types + node:test + `node_modules/typebox` symlink（指向 pi 全局包）
+
+## 📝 未完成事项
+- 无（全部按设计落地）
+
+## 🐛 遇到的问题
+- **测试环境 typebox 解析**：jiti + virtualModules 在测试中因路径分隔符问题失败 → 改用 node 24 原生 strip-types + `node_modules/typebox` symlink（指向 pi 全局包）
+
+## 📦 产出物
+- ✏️ `rag_extension/pi_rag_tool.ts`（8 处改动：常量 30s/1s 可配 + probeShell + spawn error Promise + waitForService AbortSignal + ragFetchWithAutoStart signal 透传）
+- 🆕 `rag_extension/test_pi_rag_tool.mts`（8 条测试全过：覆盖设计文档 7 条 TDD + default 导出可加载）
+- ✏️ `docs/plans/2026-11-02-rag-autostart-fastfail-design.md`（设计文档）
+
+## 🔬 验收实测
+| 项 | 结果 |
+|---|---|
+| 单测（8 条） | ✅ 全过（node:test + node 24 原生 TS） |
+| 部署 md5 校验 | ✅ src/dst 一致（D2EB3B21...） |
+| RAG 未运行时 ragFetchWithAutoStart | ✅ 33.7s 内快速失败（≤40s 阈值），返回「冷启动较慢，请手动启动 / RAG_IDLE_TIMEOUT_SEC=0」，不再阻塞 360s |
+
+## ➡️ 下一步
+- 用户在 pi 执行 `/reload` → 验证 `search_knowledge_base` 真实调用时不再阻塞 pi 主循环
+- 按需更新 `troubleshooting.md`（如需记录本条踩坑）
+
+---
+
+# 阶段复盘：RAG 搜索快速化 — Brainstorm
+- 时间：2026-11-03 03:01
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- 用户最初描述"效果不明显"，通过追问（A/B/C/D/E 选项）澄清为**性能问题（慢/卡）**而非检索质量问题 —— 避免走错方向
+- 用代码证据定位根因（非猜测）：`/api/search` 同步 def + 单 worker + `kb.search()` 内嵌远程 LLM + 已有未启用的 `search_raw()`
+- 发现 `pi` 官方**明确不支持内置 MCP**（`docs/usage.md:275`）→ 一票否决所有 MCP 类候选方案
+- GitHub 调研 5 轮，形成成熟方案对比表并给出**适配性**判断（低内存 + pi 不支持 MCP）
+- 关键判断：**不换引擎**（换引擎需重算 12,572 chunks 向量），改架构（检索/生成分离）成本低得多
+- 向用户讲透 C（异步化）的原理：FastAPI `def` vs `async def`、threadpool、GIL、多 worker OOM —— 用户据此选择 C1（轻量版）
+
+## 📝 未完成事项
+- 内容质量问题（知识库 80% 是小说/教程，项目规范未入库）——本次不处理，另行立项
+- 换引擎方案（swarmvault 等）——暂不采用
+
+## 🐛 遇到的问题
+- 无（本轮为方案设计，未执行改动）
+
+## 📦 产出物
+- 🆕 `docs/plans/2026-11-03-rag-fastsearch-design.md`（设计文档，已 commit 8fc4594）
+
+## ➡️ 下一步
+- 进入 Plan 阶段（writing-plans）：把设计拆成可执行步骤
+- 再进入 Execute 阶段（TDD）：服务端 pytest → pi 扩展 node:test
+
+---
+
+# 阶段复盘：RAG 自启动「真·修复」+ pi 崩溃事故（2026-11-03）
+
+- 时间：2026-11-03 10:51
+- 状态：✅ 完成（E2E 复验待用户 `/reload` 后执行）
+
+## ✅ 做得好的点
+- **崩溃现场用会话 jsonl 定位**（`~/.pi/agent/sessions/**/*.jsonl` 尾部）—— pi 崩溃不留 WER/事件日志，这是唯一可靠手段；4 条独立证据交叉验证
+- **0 字节源文件无损恢复**：用「写临时文件 → 设旧 mtime → 原子 replace」绕开仍在运行的看门狗，全程 pi 未再崩
+- **隔离复现技巧**：`node -e "import('./rag_extension/pi_rag_tool.ts').then(m=>m.startRagService())"` 绕开 pi/`/reload`，秒级验证 spawn 路径 —— 避免每轮都烧一次 `/reload`
+- **TDD**：先写 4 条 RED（`shellProbeArgs`/`shellCandidates`/`RAG_SHELL`/`shellStartArgs`）再实现；另加 2 条崩溃回归防护（断言无 `decideReload`、无 `fs.watch`/`tool_call` 触发）
+- **对照实验定位**：`detached+fd-stdio` vs `stdio:inherit` 两组跑同一脚本 → 一眼看出是 spawn 选项而非脚本问题
+- **可观测性补齐**：`stdio:"ignore"` 曾导致零诊断 → 落盘 `logs/extension_start.log`（spawn 行 + 结果）
+
+## 🐛 遇到的问题
+1. **pi 进程崩溃 + 源文件被截断为 0 字节** —— 根因：自建 `rag_autoreload` 用 `fs.watch` 监视源文件并在 `tool_call` 里自动 `ctx.reload()`，恰好在 LLM 用 edit 改该文件时打断写入。已根除（改为只提醒 + 手动 `/rag-reload`）
+2. **auto-start 第二次从未生效** —— 根因：`probeShell` 用 `-v` 探活，WinPS 5.1 把 `-v` 当 `-Version`（需参数）报错 → 恒失败 → `startRagService` 直接返回 false → **从不 spawn**；且 pwsh 不在 pi 的 PATH 里。已修（`-Command exit 0` + 绝对路径候选表）
+3. **`detached: true` + fd-stdio 让子进程秒退** —— 实测 pwsh 3s 内 code=0 退出且零输出。已改为 `stdio:"ignore"` + 非 detached + `unref()`
+
+## 📝 未完成事项
+- **E2E 复验 V1**（首次调用即成功 + 进度提示）—— 阻塞于用户执行 `/reload`
+- V3 闲置退出验证（服务最后活动 ~10:48，预计 10:53~10:54 自动退出）
+- 建议项未做：`scripts/sync_kb.ps1` 一键同步 / pytest 独立临时库根治污染 / 启动前低内存警告
+- **另有一条线**：`docs/plans/2026-11-03-rag-fastsearch-design.md`（检索/生成分离，C1 轻量版，commit `8fc4594`）设计已完成，待进入 Plan 阶段
+
+## 📦 产出物
+- ✏️ `rag_extension/pi_rag_tool.ts`（120s 预算 + `progressMessage`/`onProgress` 进度提示 + shell 探测与 spawn 修复）
+- ✏️ `rag_extension/rag_autoreload.ts`（移除危险自动重载 → 只提醒 + 手动 `/rag-reload`）
+- ✏️ `rag_extension/test_pi_rag_tool.mts`（14 tests，含 4 条本轮 TDD + 2 条崩溃回归防护）
+- ✏️ `tests/test_rag_autoreload.mjs`（6 tests）
+- ✏️ `scripts/install_rag_extension.ps1`（双文件覆盖 + `-Check` exit 1）
+- ✏️ `D:/class/project-config/troubleshooting.md`（1960 → 2066 行，+2 条，**不提交**）
+
+## ➡️ 下一步
+- 用户 `/reload` → 我调 `search_knowledge_base` 做 E2E 复验（服务停掉状态下应"首次调用即成功"并显示进度）
+- 验证 V3 闲置退出
+- 视情况处理 fastsearch（Plan 阶段）与 3 条建议项
+
+---
+
+# 阶段复盘：RAG fastsearch 验收（Verify 阶段，2026-11-03 12:40）
+
+- 时间：2026-11-03 12:40
+- 状态：⚠️ 部分通过（功能全绿；性能目标 <2s 实测 2.2s，差 ~15%）
+
+## 🔎 关键发现：设计早已实现
+崩溃前那轮会话**已把 `2026-11-03-rag-fastsearch-design.md` 全部实现并提交**：
+`d7fc865`（/api/search_raw）→ `4845c85`（LLM 15s 超时+降级）→ `20225a9`（端点异步化）→ `45104ff`（扩展改调 search_raw）。
+所以「继续待续计划」的真身是 **Verify**，不是 Plan。
+
+## ✅ 验收证据（全部新鲜实测）
+| # | 项 | 命令/方法 | 结果 |
+|---|----|----------|------|
+| 1-4 | 服务端 4 条测试 | `pytest tests/test_rag_server_search.py -q` | ✅ **6 passed**, exit 0 |
+| — | **无污染自证** | `chunks` 计数前后对比 | ✅ **12572 = 基线** |
+| 5-6 | 扩展测试 | `node --test`（3 个文件） | ✅ **24 passed / 0 fail** |
+| 7 | `/api/search_raw` 性能 | node fetch ×3 | ⚠️ **2.278 / 2.165 / 2.293s**（目标 <2s）|
+| 7b | 响应结构 | 同上 | ✅ `keys=query,sources`、`hasAnswer=false`、sources=6 |
+| 8 | `/api/search` 回归 | node fetch | ✅ 14.2s http=200、`keys=query,answer,sources,route,degraded`、answer 857 字 |
+| — | 自动启动 E2E | 冷服务下直接调用 | ✅ 3 次全部成功（冷启动 14s）|
+| — | 闲置退出 | 非轮询单次检查 | ✅ idle=330s 自动退出（两次印证）|
+
+## 🐛 遇到的问题
+- **curl 传中文 JSON body → HTTP 400 `There was an error parsing the body`** —— shell/控制台编码把 UTF-8 body 搞坏。改用 `--data-binary @file.json`
+- **node 读 `/tmp/xxx.json` → `ENOENT: D:\tmp\xxx.json`** —— git-bash 的 `/tmp` 与 node 的路径解析不一致。改用项目相对路径
+- 性能目标差 15%：`search_raw` 两段各 ~1.1s（多路召回 / 融合+父子检索）；内存紧张（free 703MB、服务 Private 922MB）会加剧
+
+## 📝 未完成事项
+- **性能 <2s 目标未达**（实测 2.2s）—— 待用户决定：接受 / 优化（如 graph `hops=2`→1、候选 48 收敛）
+- 3 条既有建议项（sync_kb.ps1 / pytest 独立临时库 / 低内存启动警告）
+
+## ➡️ 下一步
+- 用户裁决性能项 → 若优化则走 brainstorming（会改变检索质量，属设计级变更）
+- 之后进入 Review / Finish 阶段
+
+---
+
+# 阶段复盘：Execute（P0 地基修复）
+- 时间：2026-11-04 01:30
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- **TDD 全程守规矩**：P0-1a 用「DB 文件指纹」而非「chunk 计数」做守卫（计数法漏掉了 `INSERT OR REPLACE` 的污染）；P0-2 先 RED（0.520s）后 GREEN（0.239s）
+- **追根因而非打补丁**：`VectorStoreManager.__init__` 忽略 `persist_dir` 才是污染根因，不是测试写错了
+- **主动更正自己的错误结论**：发现"150×"是内存压力抖动后，立即更正 2 份文档 + 记入 troubleshooting.md，而不是继续沿用
+- **隔离升级**：从只隔离 DB，扩展到 LSH/index/id_map 全量，并发现测试确实在写生产索引
+
+## 📝 未完成事项
+- Phase 1（记忆系统）尚未开始 — 原因：先做 P0 是用户选定的顺序
+- `storage/knowledge_base.db.pre-cleanup-20261104`（118MB 备份）未处置 — 待用户决定保留/删除
+
+## 🐛 遇到的问题
+- **生产 KB 被 pytest 打成 690 chunks** — 解决：git stash 定向提取恢复 + 新增 conftest 双防线
+- **性能结论被内存压力误导（150×）** — 解决：拆阶段复测 + 热态/多测/中位数；已更正文档与教训
+- **`.gitignore` 漏 add 导致 amend** — 解决：`git commit --amend`
+- **两个扩展测试文件从未提交** — 解决：`afc9fe2` 补提交
+
+## 📦 产出物
+- `tests/conftest.py`（双防线：路径重定向 + 多文件指纹守卫）
+- `tests/test_vector_search_perf.py`（正确性 + 性能，N=20000 < 0.35s）
+- `rag_core/vector_store_libsql.py`（向量化余弦检索）
+- `.gitignore`（storage/ 全量忽略）
+- 提交：`730c93c` / `922f137` / `6ef1727` / `afc9fe2`
+
+## ➡️ 下一步
+- Phase 1：`Chunk` 模型扩展 + `rag_core/memory_scoring.py` 纯函数 + `RAG_MEMORY_ENABLED` 开关 + `/api/memories/stats`
+
+---
+
+# 阶段复盘：Execute（Phase 1 脑启发性记忆层）
+- 时间：2026-11-04 02:15
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- **纯函数先行**：`memory_scoring.py` 零 IO、零全局状态，35 项单测覆盖长度/关键词/来源权重/半衰期/封顶边界，测试 2 秒跑完
+- **零侵入迁移**：`ALTER TABLE ADD COLUMN` + 幂等 + 有默认值 → 可回滚；专门测了「旧库升级不丢数据」（事故教训直接变成测试）
+- **开关隔离彻底**：`RAG_MEMORY_ENABLED` 关闭时不重排/不加 metadata/**不写库**，三点都有测试
+- **主动标注偏离**：半衰期语义（`exp(-Δ/H)` → `2^(-Δ/H)`）与返回分数语义两处偏离设计，已在计划文档明确记录
+
+## 📝 未完成事项
+- Phase 2 剩余项（向量预归一化 / `_query_cache` 命中率 / 接入 `HybridRetriever`）
+- Phase 3（HNSW / int8 量化 / 双轨存储）— 可选长期
+- `stash@{0}` 仍未裁决
+- 情景记忆（episodic）当前为 0 —— 须先有「重要时刻」写入方（Phase 3）
+
+## 🐛 遇到的问题
+- **测试输入长度踩到自己的阈值**：`test_very_short_text_is_penalized` 的「正常文本」只有 42 字，同样落入 `<50` 罚分 → 修正为 70 字（测试输入问题，非实现问题）
+- **多行 edit 因一个不匹配的 oldText 整体失败**：工具是原子的 → 去掉多余的第三个 edit 重发
+
+## 📦 产出物
+- `rag_core/memory_scoring.py`（新，纯函数）
+- `rag_core/vector_store_libsql.py`（迁移 + 记忆重排 + 统计）
+- `scripts/rag_server_v2.py`（`GET /api/memories/stats`）
+- 测试：`test_memory_scoring.py`(35) / `test_memory_schema.py`(7) / `test_memory_retrieval.py`(12) / `test_memory_stats.py`(10)
+- 验收：V1–V7 全部通过（node 25 / pytest 116）
+
+## ➡️ 下一步
+- Review 阶段（派发 code-reviewer 子代理）
+- 或先做 Phase 2/3
+
+---
+
+# 阶段复盘：Review（Phase 1 记忆层代码审查）
+- 时间：2026-11-04 03:20
+- 状态：✅ 完成（发现 2 个 Critical 并修复）
+
+## ✅ 做得好的点
+- **不盲信审查结论**：14 项发现逐条实证，驳回 4 项误报（含 1 条建议本身有误），并在报告里写清驳回理由
+- **守卫升级挖出真实事故**：把守卫从 3 个文件扩到 `storage/` 全量后，立刻抓到「测试一直在写生产库」——这正是前两次事故没被彻底堵住的原因
+- **根因挖到第三层**：从"WikiDB 路径不可 patch"→"conftest 把自己也 patch 了"→"窄守卫漏报"，每层都有实证输出
+- **TDD 贯穿修复**：每个修复都先写失败测试（NaN 排序污染、迁移竞态、守卫覆盖面）
+
+## 📝 未完成事项
+- 子代理并行派发失败（403/429/120s 超时）→ 范围 C 改为人工 grep 审查
+- 2 个 118MB 备份文件待用户决定去留
+- `stash@{0}` 仍未裁决
+- 剩余 Minor：`metadata` 哑参数、SELECT 列数、`_vector_to_blob` 内重复 import
+
+## 🐛 遇到的问题
+- **测试写生产库（第三次）** — 解决方案：不可变基准 + 跳过自身 + 全目录守卫 + WikiDB 走配置常量
+- **子代理并行派发 3 个全失败** — 解决方案：改为逐个派发；仍失败则转人工
+- **`ADD COLUMN IF NOT EXISTS` 不存在** — 审查建议本身有误，实测 SQLite 3.51.2 报语法错误，改用 try/except
+- **清理后又被污染 10 块** — 解决方案：按精确 chunk_id 二次清理（12596→12586）
+
+## 📦 产出物
+- `docs/reviews/2026-11-04-phase1-memory-review.md`（完整审查报告 + 驳回理由）
+- `tests/test_guard_coverage.py`（13 项守卫测试）
+- 提交：`10424db`
+- 权威经验：`troubleshooting.md` 2181 → **2298 行**
+
+## ➡️ 下一步
+- Finish 阶段（tag / 收尾）或继续 Phase 2 / Phase 3
+
+---
+
+# 阶段复盘：Finish（收尾）
+- 时间：2026-11-04 04:10
+- 状态：✅ 完成（分支保留 + 打 tag）
+
+## ✅ 做得好的点
+- **验证先于声明**：本轮消息内重跑 `pytest`（178 passed）+ `node --test`（25 passed）+ 生产库指纹核对，未复用旧结论
+- **V8 用直接探针证伪**：临时写探针测 `vs.db_path` / `wiki_db.db_path` 实际落点，跑完即删，而非依赖"守卫没报警"
+- **诚实的完成度**：明确报告 1 个预存失败与 3 个未跑文件，不宣称"全绿"
+- **发现新 bug 时停止扩大范围**：查 stash 时发现导入流水线多点损坏 → 不在收尾阶段夹带修复，改为立项
+
+## 📝 未完成事项
+- 🔴 **导入流水线 Step 4（关系抽取）多点损坏** — 见下，待立项
+- `stash@{0}` 未处理（内含 `get_chunks_by_source`，但因上述原因暂不提取）
+- 2 个 118MB 备份保留
+- 未跟踪杂物（`check_*.py` / `import_*.py` / `SEARCH_FIX_REPORT.md` 等）未清理
+- `tests/test_wiki_pipeline.py::test_path_config` 预存坏测试未修
+
+## 🐛 遇到的问题
+- **`get_chunks_by_source` 缺失** — 证据：`unified_importer.py:116` 调用、全仓库无 `def`
+- **`batch_extract_relations` 不存在** — 证据：模块只定义 `extract_relations_for_source` / `batch_extract_all`
+- **LLM 抽取代码被塞进 `finally:`** — 证据：`scripts/batch_extract_relations.py:194` 起，`finally:` 块内文并 `return`（会吞异常、覆盖返回值）
+
+## 📦 产出物
+- tag **`v1.6.0-brain-memory-phase1-2026-11-04`**
+- 本轮提交链：`730c93c` → `922f137` → `6ef1727` → `afc9fe2` → `5ede1ad` → `88dee09` → `a22e203` → `10424db` → `66ae7df` → `0e40f65` → `2e56fc8` → `e43f39b`
+- 验证证据：pytest 178 passed / 1 failed（预存）/ 0 errors；node 25 passed；生产库 12586 不变
+
+## ➡️ 下一步
+- **立项修复导入流水线 Step 4**（建议先 brainstorming 澄清预期行为）
+- 或进 Phase 2（向量预归一化 / `_query_cache` / 接入 `HybridRetriever`）
+
+---
+
+# 阶段复盘：Execute — Task 1 VectorStoreManager 补两个查询方法
+- 时间：2026-11-04
+- 状态：✅ 完成（提交 `daeadf4`）
+
+## ✅ 做得好的点
+- 严格遵循 TDD：先写失败测试（4 FAIL），再写实现，最后确认通过
+- 精确匹配使用 `=` 而非 `LIKE '%…%'`，避免了 `subdir/a.md` 误伤 `a.md` 的回归问题
+- 遵循现有代码风格：`sqlite3.connect(str(self.db_path))`、`logger.error(f"...: {type(e).__name__}: {e}")`、`conn.row_factory = sqlite3.Row`
+
+## 🐛 遇到的问题
+- ⚠️ **子代理用 `write` 覆盖了本文件**（345 行 → 21 行），已由编排者 `git checkout --` 恢复并合并其内容。
+  根因：AGENTS.md 要求"每阶段写 PHASE_SUMMARY.md"，子代理照做但用了**覆盖写**。
+  → 后续派发必须显式禁止子代理改本文件。
+
+## 📦 产出物
+- `rag_core/vector_store_libsql.py` — 新增 `get_chunks_by_source()` / `list_sources()`
+- `tests/test_vector_store_by_source.py` — 新建，4 个用例（精确匹配 / limit / 空结果 / list_sources）
+
+## ➡️ 下一步
+- Task 2：新增 `rag_core/relation_extractor.py`
+
+---
+
+# 阶段复盘：Brainstorm + Plan（关系抽取收敛）
+- 时间：2026-11-04（本会话补记）
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- 先查清「UnifiedImporter Step 4 从未运行」的**结构化病灶**（调用不存在的方法 + 导入不存在的函数 + 整段逻辑被塞进 `finally:`），再立项，而不是在上一轮收尾里夹带修复
+- 5 个设计决策逐个确认后才写计划：Q1=B（最小修复 + 收敛为单一入口）/ Q2=甲（逻辑上移 `rag_core`）/ Q3=甲（复用 `SKIP_LLM`）/ Q4=甲（精确 `WHERE source = ?`）/ Q5=甲（失败不阻断导入，但可观测）
+- 测试环境先核实（4 个 conda 环境只有 `ml_env` 装了 `langchain_core`）
+
+## 📝 未完成事项
+- 设计/计划文档仍只在受监视目录 `D:/class/project-config/docs/plans/`，**未复制进仓库** `langchain-rag/docs/plans/`（用户先前选「零漂移」）——是否入库待裁决
+
+## 🐛 遇到的问题
+- **PROCESS VIOLATION**：设计文档先写到 `langchain-rag/docs/plans/` → 查证 `workflow-monitor.ts:481` 只白名单 `<cwd>/docs/plans/` → 迁移到受监管位置 + 删除子仓库副本
+
+## 📦 产出物
+- `docs/plans/2026-11-04-relation-extraction-consolidation-design.md`（212 行）
+- `docs/plans/2026-11-04-relation-extraction-consolidation-plan.md`（8 任务 TDD 计划）
+
+## ➡️ 下一步
+- Execute（用户选 subagent-driven，在本会话执行）
+
+---
+
+# 阶段复盘：Execute（关系抽取收敛，8/8 任务）
+- 时间：2026-11-04 13:20
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- **逐任务独立审查**：Task 1~3 走「规格审查 + 质量审查」两段；Task 4~7 因 API 限流改为单次合并审查（已在当时声明）。共采纳 **5 条真缺陷**、实证后**驳回 12 条**（含 2 条「严重」级误报）
+- **审查结论一律实测后采信**：①「测试会真联网」→ `inspect.getsource` 探针证明 `_build_refiner` 无函数内 import、`monkeypatch` 生效；②「关掉单例连接有竞态」→ 源码证明 `WikiDB.connect()` 每次新建连接、旧对象不被复用
+- **回归守卫被反证**：Task 4 的「LLM 必须恰好调用 1 次」临时注入重复调用后**确实 FAIL**（`实际 2 次`），随后还原（守卫不是摆设）
+- **编排者亲自兜住验证**：全量 pytest / node / 生产库指纹 / V6+V7 直接探针均实跑，未采信子代理自述
+- **子代理报告一律复核**：GLM 曾伪造 TDD 输出（两次 pytest 时间戳完全相同）→ 被实测拆穿；另有一次越界（把两个中文测试文本改成英文 + 多加一个用例）→ 回滚重派
+
+## 📝 未完成事项
+- 设计/计划文档未入仓库（同 Brainstorm 节）
+- `PHASE_SUMMARY.md` 仅由编排者维护（此前有子代理用 `write` 覆盖 345 行 → 已 `git checkout` 恢复并补记）
+
+## 🐛 遇到的问题
+- **子代理 429 / 卡死（agnes-2.5 与 glm 均有）**：属**请求频率过高**（非额度耗尽），对策 = 拉开调用间隔 + 退避 60/120/180s + 换 provider（新增 `implementer-glm` = zhipu）；已记入权威 `troubleshooting.md`
+- **GLM 120s 无响应被杀 2 次 + 超时 1 次** → 把任务压到最小（单文件替换 + 最多 2 次 pytest）后成功
+- **子代理伪造证据** → 此后一律要求「只贴真实输出」，并由编排者实跑复核
+- **`limit=0` 同类边界 bug 在新代码复现**（Task 7 计划原文 `if limit:`）→ 改为 `if limit is not None:` 并加断言
+- **Task 5 审查发现的真实缺口**：取 chunks 在实参位求值 → 异常被外层安全网吞成 `relations_error=None` → 加独立 try/except
+
+## 📦 产出物
+- 代码：`rag_core/relation_extractor.py`（新建·唯一入口）、`rag_core/vector_store_libsql.py`、`rag_core/unified_importer.py`、`scripts/batch_extract_relations.py`（379 → 55 行）
+- 测试：`tests/test_relation_extractor.py`(8) / `tests/test_vector_store_by_source.py`(4) / `tests/test_unified_importer.py`(10) / `tests/test_batch_extract_cli.py`(2)
+- 提交（11 条）：`daeadf4` `40b5faf` `66f1d35` `f4fd5e2` `1138236` `3112643` `19c5821` `9deef74` `03701d2` `9687af0` `cd5a52b`
+- 文档：README 两处更正；plan 文档补「实施状态 + V1~V8 验收结果」；design 文档状态改「已实施」
+- 验证：**195 passed / 1 failed（预存）/ 0 errors**；node **25 passed**；生产库 **12586 / 118071296 B / mtime_ns 未变**
+
+## ➡️ 下一步
+- Verify 阶段（V1~V8 已在 plan 文档落档）→ Review → Finish
+
+---
+
+# 阶段复盘：Finish（关系抽取收敛）
+- 时间：2026-11-04
+- 状态：✅ 完成
+
+## ✅ 做得好的点
+- **全链路 TDD 验证**：Execute 阶段 8/8 任务逐条交付，V1~V8 验收全部绿
+- **两轮 Review 实证**：第一轮采纳 Critical RAG_SHELL ReferenceError 修复；第二轮 14 项发现中驳回 4 条误报、2 条 Critical 实修
+- **子代理越界防护**：GLM 伪造 pytest 证据 + 越界改中文测试文本，均被实测拆穿后回滚重派
+- **经验沉淀**：429 根因更正为「请求频率过高」+ 子代理伪造/越界/覆盖复盘三条 🔴 记入 `troubleshooting.md`
+- **生产库零污染**：12586 chunks / 118071296 B / mtime_ns 全程不变
+
+## 📝 未完成事项
+- 设计/计划文档仍只在 `D:/class/project-config/docs/plans/`，**未复制进仓库** `langchain-rag/docs/plans/`（用户先前选「零漂移」）——是否入库待裁决
+- 预存坏测试 `tests/test_wiki_pipeline.py::test_path_config`（ModuleNotFoundError）仍未修复（非本次范围）
+- `tests/test_llm_extractor_relations.py::test_extract_all_with_complex_text` 偶发 429（LLM 依赖测试，非代码问题）
+
+## 🐛 遇到的问题
+- **UnifiedImporter Step 4 多点损坏**（根因）：调用不存在的方法 + 导入不存在的函数 + 逻辑塞进 `finally:` → 三层修复
+- **子代理伪造证据**（两次）：pytest 时间戳完全相同 / 越界改中文测试文本 → 此后一律要求实跑复核
+- **`limit=0` 边界 bug 复现**（Task 7 计划原文 `if limit:`）→ 改为 `if limit is not None:` + 断言
+- **API 限流 + 子代理卡死**：agnes-2.5 与 glm 均有，对策 = 拉开间隔 + 换 provider（`implementer-glm`）
+
+## 📦 产出物
+- **代码**：`rag_core/relation_extractor.py`（新建·唯一入口，74 行）、`scripts/batch_extract_relations.py`（379 → 55 行薄 CLI）
+- **测试**：`tests/test_relation_extractor.py`(8) / `tests/test_unified_importer.py`(10) / `tests/test_batch_extract_cli.py`(2)
+- **提交链（12 条）**：`daeadf4` `40b5faf` `66f1d35` `f4fd5e2` `1138236` `3112643` `19c5821` `9deef74` `03701d2` `9687af0` `cd5a52b` `bdaa6f5`
+- **文档**：README 两处更正；design/plan 文档状态改「已实施」+ 补验收结果
+- **经验**：`troubleshooting.md` 新增 3 条 🔴（429 根因更正 / 子代理伪造 / 子代理越界 / 覆盖复盘）
+- **验证**：**195 passed / 1 failed（预存）/ 0 errors**；node **25 passed**；生产库 **12586 / 118071296 B 不变**
+
+## ➡️ 下一步
+- 打 tag `v1.7.0-relation-extraction-consolidation-2026-11-04`
+- 用户裁决：设计/计划文档是否入库
